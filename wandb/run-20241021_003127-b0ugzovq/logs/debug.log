@@ -1,0 +1,25 @@
+2024-10-21 00:31:27,847 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Current SDK version is 0.18.5
+2024-10-21 00:31:27,848 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Configure stats pid to 11720
+2024-10-21 00:31:27,848 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Loading settings from C:\Users\attoman\.config\wandb\settings
+2024-10-21 00:31:27,848 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Loading settings from C:\SeJun\git\mTSP\wandb\settings
+2024-10-21 00:31:27,848 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Loading settings from environment variables: {}
+2024-10-21 00:31:27,848 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Applying setup settings: {'mode': None, '_disable_service': None}
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Inferring run settings from compute environment: {'program_relpath': 'mtsp_route_2opt.py', 'program_abspath': 'C:\\SeJun\\git\\mTSP\\mtsp_route_2opt.py', 'program': 'C:\\SeJun\\git\\mTSP\\mtsp_route_2opt.py'}
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_setup.py:_flush():79] Applying login settings: {}
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:_log_setup():534] Logging user logs to C:\SeJun\git\mTSP\wandb\run-20241021_003127-b0ugzovq\logs\debug.log
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:_log_setup():535] Logging internal logs to C:\SeJun\git\mTSP\wandb\run-20241021_003127-b0ugzovq\logs\debug-internal.log
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:init():621] calling init triggers
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:init():628] wandb.init called with sweep_config: {}
+config: {}
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:init():671] starting backend
+2024-10-21 00:31:27,849 INFO    MainThread:11720 [wandb_init.py:init():675] sending inform_init request
+2024-10-21 00:31:27,852 INFO    MainThread:11720 [backend.py:_multiprocessing_setup():104] multiprocessing start_methods=spawn, using: spawn
+2024-10-21 00:31:27,852 INFO    MainThread:11720 [wandb_init.py:init():688] backend started and connected
+2024-10-21 00:31:27,856 INFO    MainThread:11720 [wandb_init.py:init():783] updated telemetry
+2024-10-21 00:31:27,895 INFO    MainThread:11720 [wandb_init.py:init():816] communicating run to backend with 90.0 second timeout
+2024-10-21 00:31:28,311 INFO    MainThread:11720 [wandb_init.py:init():867] starting run threads in backend
+2024-10-21 00:31:28,423 INFO    MainThread:11720 [wandb_run.py:_console_start():2463] atexit reg
+2024-10-21 00:31:28,423 INFO    MainThread:11720 [wandb_run.py:_redirect():2311] redirect: wrap_raw
+2024-10-21 00:31:28,423 INFO    MainThread:11720 [wandb_run.py:_redirect():2376] Wrapping output streams.
+2024-10-21 00:31:28,423 INFO    MainThread:11720 [wandb_run.py:_redirect():2401] Redirects installed.
+2024-10-21 00:31:28,426 INFO    MainThread:11720 [wandb_init.py:init():911] run started, returning control to user process
