@@ -405,7 +405,7 @@ def train_model(env, val_env, policy_net, optimizer, num_epochs, batch_size, dev
                         'model_state_dict': policy_net.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'epsilon': epsilon
-                    }, os.path.join(checkpoints_path, f"episode_{episode}.pth"))
+                    }, os.path.join(checkpoints_path, f"route_episode_{episode}.pth"))
                     # 시각화 결과 저장 (주석 처리됨)
                     visualize_results(env, os.path.join(results_path, f"route_mission_paths_episode_{episode}.png"))
                     wandb.log({"mission_paths": wandb.Image(os.path.join(results_path, f"route_mission_paths_episode_{episode}.png"))})
@@ -578,7 +578,7 @@ def main():
     parser.add_argument('--test_mode', action='store_true', help="테스트 모드 활성화")
     parser.add_argument('--validation_seed', type=int, default=43, help="Validation 데이터셋 시드")
     parser.add_argument('--test_seed', type=int, default=44, help="Test 데이터셋 시드")  # 테스트 세트용 시드 추가
-    parser.add_argument('--results_dir', type=str, default="D:/mTSP/results/2opt/route", help="결과 저장 디렉토리")  # 유연성을 위한 결과 디렉토리 추가
+    parser.add_argument('--results_dir', type=str, default="K:/2024/mTSP/results/2opt/route", help="결과 저장 디렉토리")  # 유연성을 위한 결과 디렉토리 추가
     args = parser.parse_args()
 
     if torch.cuda.is_available():
