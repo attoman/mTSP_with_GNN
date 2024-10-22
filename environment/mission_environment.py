@@ -37,7 +37,7 @@ class MissionEnvironment:
         for i in range(self.num_uavs):
             self.paths[i].append(0)  # 각 UAV의 경로에 시작 미션 추가
         return self.get_state()
-
+    
     def get_state(self):
         """현재 환경 상태를 반환합니다."""
         return {
@@ -59,8 +59,6 @@ class MissionEnvironment:
         Returns:
             tuple: 다음 상태, 소요 시간 텐서, 종료 여부.
         """
-        # 보상은 외부에서 계산하도록 환경에서는 패널티를 누적하지 않습니다.
-        # 보상 계산은 학습 루프에서 별도로 처리됩니다.
         for i, action in enumerate(actions):
             if self.ready_for_next_action[i] and not self.visited[action] and not self.reserved[action]:
                 self.reserved[action] = True
@@ -70,7 +68,6 @@ class MissionEnvironment:
                 mission_to = self.missions[action]
                 self.remaining_distances[i] = calculate_distance(mission_from, mission_to)
 
-        # 보상 계산을 위해 기록
         travel_times = torch.zeros(self.num_uavs, device=self.device)
 
         for i, action in enumerate(self.targets):
@@ -98,3 +95,4 @@ class MissionEnvironment:
                     self.remaining_distances[i] = calculate_distance(self.current_positions[i], self.missions[0])
 
         return self.get_state(), travel_times, done
+

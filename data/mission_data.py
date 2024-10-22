@@ -27,7 +27,7 @@ class MissionData:
             np.random.seed(seed)
             random.seed(seed)
         missions = torch.rand((self.num_missions, 2)) * 100
-        missions[-1] = missions[0]  # 마지막 미션을 시작 미션과 동일하게 설정
+        missions[-1] = missions[0]  # 마지막 미션을 시작 미션과 동일하게 설정 (시작점과 도착점이 같음)
         start_mission = missions[0].unsqueeze(0)
         uavs_start = start_mission.repeat(self.num_uavs, 1)
         uavs_speeds = torch.rand(self.num_uavs) * 9 + 1  # 속도는 1에서 10 사이
