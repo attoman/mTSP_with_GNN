@@ -1,9 +1,0 @@
-{"time":"2024-10-21T00:26:05.1764702+09:00","level":"INFO","msg":"using version","core version":"0.18.5"}
-{"time":"2024-10-21T00:26:05.1764702+09:00","level":"INFO","msg":"created symlink","path":"C:\\SeJun\\git\\mTSP\\wandb\\run-20241021_002605-lu33l1j6\\logs\\debug-core.log"}
-{"time":"2024-10-21T00:26:05.292939+09:00","level":"INFO","msg":"created new stream","id":"lu33l1j6"}
-{"time":"2024-10-21T00:26:05.292939+09:00","level":"INFO","msg":"stream: started","id":"lu33l1j6"}
-{"time":"2024-10-21T00:26:05.293466+09:00","level":"INFO","msg":"sender: started","stream_id":"lu33l1j6"}
-{"time":"2024-10-21T00:26:05.292939+09:00","level":"INFO","msg":"handler: started","stream_id":{"value":"lu33l1j6"}}
-{"time":"2024-10-21T00:26:05.293466+09:00","level":"INFO","msg":"writer: Do: started","stream_id":{"value":"lu33l1j6"}}
-{"time":"2024-10-21T00:26:05.6551381+09:00","level":"INFO","msg":"Starting system monitor"}
-{"time":"2024-10-21T00:26:15.6645375+09:00","level":"ERROR","msg":"monitor: cpu: error sampling metrics: couldn't find pid: 22328"}
