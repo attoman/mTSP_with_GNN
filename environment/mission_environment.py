@@ -8,7 +8,7 @@ class MissionEnvironment:
     """
     다중 UAV 미션 할당을 위한 강화 학습 환경 클래스.
     """
-    def __init__(self, missions=None, uavs_start=None, uavs_speeds=None, device='cpu', mode='train', seed=None, time_weight=2.0):
+    def __init__(self, missions=None, uavs_start=None, uavs_speeds=None, device='cpu', mode='train', seed=None, time_weight=2.0, use_2opt=False):
         self.device = device
         self.mode = mode
         self.seed = seed
@@ -18,6 +18,7 @@ class MissionEnvironment:
         self.missions = missions
         self.uavs_start = uavs_start
         self.speeds = uavs_speeds
+        self.use_2opt = use_2opt  # use_2opt 인자를 저장
         self.time_weight = time_weight
         self.reset()
 
@@ -37,7 +38,7 @@ class MissionEnvironment:
         for i in range(self.num_uavs):
             self.paths[i].append(0)  # 각 UAV의 경로에 시작 미션 추가
         return self.get_state()
-    
+
     def get_state(self):
         """현재 환경 상태를 반환합니다."""
         return {
@@ -48,6 +49,29 @@ class MissionEnvironment:
             'remaining_distances': self.remaining_distances.clone(),
             'targets': self.targets
         }
+
+    def create_action_mask(self, state):
+        """
+        방문한 미션과 예약된 미션을 기반으로 액션 마스크를 생성합니다.
+        
+        Args:
+            state (dict): 현재 상태로 'visited'와 'reserved' 텐서를 포함합니다.
+            
+        Returns:
+            torch.Tensor: 액션 마스크 텐서.
+        """
+        visited = state['visited']
+        reserved = state['reserved']
+        action_mask = visited | reserved
+
+        # 시작점(0번 미션)은 임무 도중에는 방문할 수 없도록 설정
+        action_mask[0] = True
+        
+        # 모든 미션(시작점 제외)이 방문되지 않은 경우 시작점 마스크 해제
+        if not (visited[1:].all()):
+            action_mask[0] = False
+        
+        return action_mask
 
     def step(self, actions):
         """
@@ -95,4 +119,3 @@ class MissionEnvironment:
                     self.remaining_distances[i] = calculate_distance(self.current_positions[i], self.missions[0])
 
         return self.get_state(), travel_times, done
-
