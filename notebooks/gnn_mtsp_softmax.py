@@ -11,6 +11,7 @@ from torch_geometric.utils import dense_to_sparse
 import torch.autograd as autograd
 from tqdm import tqdm
 import wandb
+import pandas as pd
 import argparse
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -221,27 +222,54 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5):
     reward = -(alpha * max_travel_time + beta * total_travel_time)
     return reward
 
-
-def choose_action(action_logits, temperature=1.0, uav_order=None, global_action_mask=None):
+def masked_softmax(logits, mask, dim=-1):
     """
-    각 UAV에 대해 액션을 선택합니다. 소프트맥스 탐험을 사용합니다.
-
+    마스크를 적용한 소프트맥스 함수입니다. 마스크된 위치는 소프트맥스에서 제외됩니다.
+    
     Args:
-        action_logits (torch.Tensor): 정책 네트워크에서 나온 액션 로짓 (num_uavs, num_actions).
-        temperature (float): 소프트맥스 탐험의 온도 매개변수.
+        logits (torch.Tensor): 소프트맥스를 적용할 로그 확률.
+        mask (torch.Tensor): 마스크 텐서 (True인 위치는 마스크됨).
+        dim (int): 소프트맥스를 적용할 차원.
+    
+    Returns:
+        torch.Tensor: 마스크된 소프트맥스 확률.
+    """
+    # 마스크된 위치를 매우 작은 값으로 설정
+    masked_logits = logits.masked_fill(mask, -1e9)
+    
+    # 소프트맥스 계산
+    probs = F.softmax(masked_logits, dim=dim)
+    
+    # 소프트맥스 결과에 마스크를 다시 적용하여 확률이 0이 되도록 함
+    probs = probs.masked_fill(mask, 0.0)
+    
+    # 모든 액션이 마스크된 경우, 균등 확률로 대체
+    if mask.all(dim=dim).any():
+        probs = probs.masked_fill(mask.all(dim=dim, keepdim=True), 1.0 / logits.size(dim))
+    
+    return probs
+
+
+def choose_action(action_logits, epsilon=0.1, uav_order=None, global_action_mask=None, temperature=1.0):
+    """
+    Boltzmann 탐험 방식을 사용하여 각 UAV에 대해 액션을 선택합니다.
+    
+    Args:
+        action_logits (torch.Tensor): 정책 네트워크에서 나온 액션 로그 확률. (num_uavs, num_actions)
+        epsilon (float): 탐험률.
         uav_order (list): UAV 선택 순서.
         global_action_mask (torch.Tensor): 글로벌 액션 마스크.
-
+        temperature (float): Boltzmann 탐험에서 사용할 온도 매개변수.
+        
     Returns:
         list: 각 UAV에 대한 선택된 액션.
     """
     actions = []
-    # 다른 UAV가 동일한 액션을 선택하지 않도록 로컬 액션 마스크 초기화
     local_action_mask = torch.zeros(action_logits.shape[1], dtype=torch.bool, device=action_logits.device)
-
+    
     if uav_order is None:
         uav_order = list(range(action_logits.shape[0]))
-
+    
     for i in uav_order:
         # 글로벌과 로컬 액션 마스크 결합
         if global_action_mask is not None:
@@ -249,33 +277,46 @@ def choose_action(action_logits, temperature=1.0, uav_order=None, global_action_
         else:
             combined_mask = local_action_mask
 
+        # 현재 UAV에 대한 마스크 생성
+        current_mask = combined_mask.clone()
+        
+        # 마스크된 로그 확률 계산
         masked_logits = action_logits[i].clone()
-        masked_logits[combined_mask] = float('-inf')  # 선택되지 않도록 -inf으로 마스크
-
-        # 온도 조절 적용
-        adjusted_logits = masked_logits / temperature
-
-        # 확률 계산
-        masked_probs = F.softmax(adjusted_logits, dim=-1)
-
-        # 모든 액션이 마스킹되어 확률이 NaN인 경우 처리
-        if torch.isnan(masked_probs).any() or masked_probs.sum().item() == 0:
-            # 가능한 액션 중에서 무작위로 선택
-            valid_actions = torch.where(~combined_mask)[0]
-            if len(valid_actions) > 0:
-                action = random.choice(valid_actions.tolist())
-            else:
-                # 선택 가능한 액션이 없는 경우 현재 UAV는 행동하지 않음
-                action = None
+        masked_logits[combined_mask] = -1e9  # 마스크된 액션의 로그 확률을 매우 작은 값으로 설정
+        
+        # 온도 스케일링 적용
+        scaled_logits = masked_logits / temperature
+        
+        # 마스크된 소프트맥스 적용
+        probs = masked_softmax(scaled_logits, combined_mask, dim=-1)
+        
+        # 확률이 모두 0인 경우 처리
+        if probs.sum() == 0:
+            # 모든 액션이 마스크된 경우, 기본 액션 선택 (예: 시작 지점)
+            action = 0
         else:
-            # 확률 분포에서 액션 샘플링
-            action = torch.multinomial(masked_probs, num_samples=1).item()
-
+            # 탐험률 적용
+            if random.random() < epsilon:
+                # 탐험: 유효한 액션 중 랜덤 선택
+                valid_actions = torch.where(probs > 0)[0]
+                if len(valid_actions) > 0:
+                    action = random.choice(valid_actions.tolist())
+                else:
+                    action = torch.argmax(probs).item()
+            else:
+                # 탐사: 확률에 따라 샘플링
+                try:
+                    action = torch.multinomial(probs, 1).item()
+                except RuntimeError:
+                    # 샘플링 실패 시, 가장 높은 확률의 액션 선택
+                    action = torch.argmax(probs).item()
+        
         actions.append(action)
-        if action is not None:
-            local_action_mask[action] = True  # 다른 UAV가 동일한 액션을 선택하지 않도록 마스크
-
+        local_action_mask[action] = True  # 다른 UAV가 동일한 액션을 선택하지 않도록 마스크
+    
     return actions
+
+
 
 
 def compute_uav_order(env):
@@ -741,7 +782,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     arrival_times = calculate_arrival_times(positions, env.missions, env.speeds)
 
                     # 정책 네트워크 순전파
-                    action_probs, state_values = policy_net(
+                    action_logits, state_values = policy_net(
                         env.missions, 
                         edge_index, 
                         batch, 
@@ -752,27 +793,27 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                         arrival_times
                     )
 
-                    # DataParallel 사용 시 action_probs와 state_values의 첫 번째 차원을 평균으로 병합
+                    # DataParallel 사용 시 action_logits와 state_values의 첫 번째 차원을 평균으로 병합
                     if isinstance(policy_net, nn.DataParallel):
-                        action_probs = action_probs.mean(dim=0)  # 평균을 취하거나 적절한 방식으로 병합
+                        action_logits = action_logits.mean(dim=0)  # 평균을 취하거나 적절한 방식으로 병합
                         state_values = state_values.mean(dim=0)  # 동일하게 병합
 
                     # UAV 선택 순서 결정
                     uav_order = compute_uav_order(env)
                     
                     # 액션 선택
-                    actions = choose_action(action_probs, epsilon, uav_order, global_action_mask=action_mask)
+                    actions = choose_action(action_logits, epsilon, uav_order, global_action_mask=action_mask, temperature=temperature)
 
                     # 각 UAV의 액션에 대한 log_prob과 state_value 수집
                     for i, action in enumerate(actions):
                         # 선택된 액션의 확률을 가져옵니다.
-                        prob = action_probs[i, action]
+                        prob = F.softmax(action_logits[i], dim=-1)[action]
                         log_prob = torch.log(prob + 1e-10).squeeze()  # 스칼라로 만듦
                         log_probs.append(log_prob)
                         values.append(state_values[i].squeeze())  # 스칼라로 만듦
 
                     # 엔트로피 계산 및 저장
-                    entropy = -(action_probs * torch.log(action_probs + 1e-10)).sum(dim=1).mean()
+                    entropy = -(F.softmax(action_logits, dim=-1) * F.log_softmax(action_logits, dim=-1)).sum(dim=1).mean()
                     entropy_list.append(entropy)
 
                     # 환경 스텝
@@ -867,7 +908,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     "uav_travel_times": env.cumulative_travel_times.tolist(),  # UAV별 이동 시간 추가
                     "uav_assignments": [len(path) for path in env.paths],  # UAV별 할당된 미션 수
                     "entropy_coeff": entropy_coeff,  # 엔트로피 가중치 로깅
-                    "action_probs": wandb.Histogram(action_probs.detach().cpu().numpy())
+                    "action_probs": wandb.Histogram(F.softmax(action_logits, dim=-1).detach().cpu().numpy())
                 })
 
                 episode += 1
@@ -881,7 +922,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
             # 검증
             if epoch % 1 == 0:
-                validation_reward = validate_model(val_env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, wandb_name)
+                validation_reward = validate_model(val_env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, wandb_name, temperature)
                 
                 # 조기 종료 체크
                 if validation_reward > best_validation_reward:
@@ -927,6 +968,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
     print(f"학습이 완료되었습니다. 마지막 체크포인트가 저장되었습니다: {last_checkpoint_path}")
 
     wandb.finish()
+
 
 
 # ============================
@@ -991,8 +1033,8 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
 
             # UAV 선택 순서 결정
             uav_order = compute_uav_order(env)
-            # 소프트맥스 탐험을 사용하여 액션 선택
-            actions = choose_action(action_logits, temperature=temperature, uav_order=uav_order, global_action_mask=action_mask)
+            # 액션 선택 (탐험률 0으로 설정하여 결정적 선택)
+            actions = choose_action(action_logits, epsilon=0.0, uav_order=uav_order, global_action_mask=action_mask, temperature=temperature)
 
             # 환경 스텝
             next_state, travel_time, done = env.step(actions)
@@ -1053,9 +1095,17 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
         "feature_importance": feature_importance  # 특성 중요도 추가
     })
 
+    # 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
+    feature_importance_path = os.path.join(results_path, f"feature_importance_validation_epoch_{epoch}.png")
+    visualize_feature_importance(feature_importance, feature_importance_path, title="Feature Importance - Validation - " + wandb_name)
+    wandb.log({
+        "feature_importance_validation_image": wandb.Image(feature_importance_path)
+    })
+
     policy_net.train()  # 다시 학습 모드로 전환
     
     return total_reward
+
 
 
 def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, results_path, reward_type, alpha, beta, wandb_name="run", temperature=1.0):
@@ -1121,8 +1171,8 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
 
             # UAV 선택 순서 결정
             uav_order = compute_uav_order(env)
-            # 소프트맥스 탐험을 사용하여 액션 선택
-            actions = choose_action(action_logits, temperature=temperature, uav_order=uav_order, global_action_mask=action_mask)
+            # 액션 선택 (탐험률 0으로 설정하여 결정적 선택)
+            actions = choose_action(action_logits, epsilon=0.0, uav_order=uav_order, global_action_mask=action_mask, temperature=temperature)
 
             # 환경 스텝
             next_state, travel_time, done = env.step(actions)
@@ -1178,19 +1228,15 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
         "feature_importance": feature_importance  # 특성 중요도 추가
     })
     
-    # 선택 사항: 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
+    # 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
     feature_importance_path = os.path.join(results_path, "feature_importance_test.png")
     visualize_feature_importance(feature_importance, feature_importance_path, title="Feature Importance - Test - " + wandb_name)
     wandb.log({
-        "feature_importance_test_bar": wandb.Bar(
-            name="Feature Importance - Test",
-            x=list(feature_importance.keys()),
-            y=list(feature_importance.values())
-        ),
         "feature_importance_test_image": wandb.Image(feature_importance_path)
     })
 
     policy_net.train()  # 다시 학습 모드로 전환
+
 
 # ============================
 # 시각화 및 결과 저장 함수
@@ -1340,7 +1386,7 @@ def main():
     parser.add_argument('--heads', type=int, default=8, help="GNN Transformer 헤드 수")
     parser.add_argument('--num_epochs', type=int, default=20000, help="에폭 수")
     parser.add_argument('--batch_size', type=int, default=1024, help="배치 크기")
-    parser.add_argument('--gamma', type=float, default=0.99, help="할인율 (gamma)")
+    parser.add_argument('--gamma', type=float, default=0.1, help="할인율 (gamma)")
     parser.add_argument('--lr_actor', type=float, default=1e-4, help="액터 학습률")
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="크리틱 학습률")
     parser.add_argument('--weight_decay_actor', type=float, default=3e-4, help="액터 옵티마이저의 weight decay")
@@ -1357,6 +1403,7 @@ def main():
     parser.add_argument('--gnn_dropout', type=float, default=0.3, help="GNN Transformer 인코더의 드롭아웃 비율")
     parser.add_argument('--actor_dropout', type=float, default=0.3, help="액터 네트워크의 드롭아웃 비율")
     parser.add_argument('--critic_dropout', type=float, default=0.3, help="크리틱 네트워크의 드롭아웃 비율")
+    parser.add_argument('--epsilon_decay', type=float, default=0.999, help="Epsilon 감소율")
     
     parser.add_argument('--reward_type', type=str, default='mixed', choices=['max', 'total', 'mixed'], help="보상 함수 유형: 'max', 'total', 'mixed'")
     parser.add_argument('--alpha', type=float, default=0.5, help="혼합 보상 시 최대 소요 시간 패널티 가중치 (reward_type='mixed'일 때 사용)")
@@ -1507,7 +1554,6 @@ def main():
             optimizer_critic=optimizer_critic,
             scheduler_actor=scheduler_actor,
             scheduler_critic=scheduler_critic,
-            checkpoint_path=args.checkpoint_path,
             num_epochs=args.num_epochs,
             batch_size=args.batch_size,
             device=device,
@@ -1523,6 +1569,7 @@ def main():
             checkpoints_path=checkpoints_path,
             patience=10,
             wandb_name=args.name,
+            epsilon_decay=args.epsilon_decay,
             temperature=args.temperature  # 추가된 매개변수 전달
         )
 

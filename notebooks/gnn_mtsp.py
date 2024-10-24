@@ -8,7 +8,6 @@ import json
 import numpy as np
 from torch_geometric.nn import TransformerConv
 from torch_geometric.utils import dense_to_sparse
-import torch.autograd as autograd
 from tqdm import tqdm
 import wandb
 import argparse
@@ -122,57 +121,6 @@ def calculate_arrival_times(uav_positions, mission_coords, speeds):
     return arrival_times
 
 # ============================
-# 2-opt 알고리즘 구현
-# ============================
-
-def two_opt(route, mission_coords):
-    """
-    2-opt 알고리즘을 사용하여 경로를 최적화합니다.
-    시작과 끝을 고정하여 0으로 유지합니다.
-    
-    Args:
-        route (list): UAV의 현재 미션 경로.
-        mission_coords (torch.Tensor): 모든 미션의 좌표.
-        
-    Returns:
-        list: 최적화된 미션 경로.
-    """
-    best = route
-    improved = True
-    while improved:
-        improved = False
-        best_distance = calculate_total_distance(best, mission_coords)
-        for i in range(1, len(best) - 2):
-            for j in range(i + 1, len(best) -1):  # 마지막 지점은 고정
-                if j - i == 1:
-                    continue  # 연속된 미션은 스킵
-                new_route = best[:i] + best[i:j][::-1] + best[j:]
-                new_distance = calculate_total_distance(new_route, mission_coords)
-                if new_distance < best_distance:
-                    best = new_route
-                    best_distance = new_distance
-                    improved = True
-        if improved:
-            continue
-    return best
-
-def calculate_total_distance(route, mission_coords):
-    """
-    주어진 경로의 총 거리를 계산합니다.
-    
-    Args:
-        route (list): UAV의 미션 경로.
-        mission_coords (torch.Tensor): 모든 미션의 좌표.
-        
-    Returns:
-        float: 총 거리.
-    """
-    total = 0.0
-    for i in range(len(route) - 1):
-        total += calculate_distance(mission_coords[route[i]], mission_coords[route[i+1]]).item()
-    return total
-
-# ============================
 # 보상 함수 구현
 # ============================
 
@@ -228,20 +176,12 @@ def normalize_rewards(rewards):
     std_reward = rewards.std() + 1e-5  # 분모가 0이 되는 것을 방지
     return (rewards - mean_reward) / std_reward
 
-
-# 보상 정규화 (에피소드 내에서 정규화)
-def normalize_rewards(rewards):
-    rewards = torch.tensor(rewards, dtype=torch.float32)
-    mean_reward = rewards.mean()
-    std_reward = rewards.std() + 1e-5  # 분모가 0이 되는 것을 방지
-    return (rewards - mean_reward) / std_reward
-
 def choose_action(action_probs, epsilon=0.1, uav_order=None, global_action_mask=None):
     """
     각 UAV에 대해 액션을 선택합니다. epsilon-탐욕 전략을 사용합니다.
     
     Args:
-        action_probs (torch.Tensor): 정책 네트워크에서 나온 액션 확률.
+        action_probs (torch.Tensor): 정책 네트워크에서 나온 액션 확률. (num_uavs, num_missions)
         epsilon (float): 탐험률.
         uav_order (list): UAV 선택 순서.
         global_action_mask (torch.Tensor): 글로벌 액션 마스크.
@@ -266,14 +206,16 @@ def choose_action(action_probs, epsilon=0.1, uav_order=None, global_action_mask=
         masked_probs[combined_mask] = float('-inf')  # 선택되지 않도록 -inf으로 마스크
         masked_probs = F.softmax(masked_probs, dim=-1)
         
-        if random.random() < epsilon:
-            valid_actions = torch.where(masked_probs > 0)[0]
-            if len(valid_actions) > 0:
+        # 유효한 액션이 있는지 확인
+        valid_actions = torch.where(masked_probs > 0)[0]
+        if len(valid_actions) == 0:
+            # 유효한 액션이 없으면 기본 액션 선택 (예: 시작 지점)
+            action = 0
+        else:
+            if random.random() < epsilon:
                 action = random.choice(valid_actions.tolist())
             else:
                 action = torch.argmax(masked_probs).item()
-        else:
-            action = torch.argmax(masked_probs).item()
         
         actions.append(action)
         local_action_mask[action] = True  # 다른 UAV가 동일한 액션을 선택하지 않도록 마스크
@@ -367,7 +309,6 @@ def compute_feature_importance(policy_net, mission_coords, edge_index, batch, ua
     
     return feature_gradients
 
-
 # ============================
 # 데이터 클래스
 # ============================
@@ -407,7 +348,6 @@ class MissionData:
         """새로운 시드를 사용하여 미션 데이터를 재설정합니다."""
         self.seed = seed
         self.missions, self.uavs_start, self.uavs_speeds = self.generate_data()
-
 
 # ============================
 # 강화 학습 환경 클래스 (다중 에이전트)
@@ -622,62 +562,57 @@ class ImprovedActorCriticNetwork(nn.Module):
             tuple: 액션 확률과 상태 값.
         """
         # GNN 인코더를 위한 입력 전처리
-        mask_embedded = action_mask.unsqueeze(-1).unsqueeze(-1).repeat(1, self.num_uavs, 1).float()
-        speeds_embedded = speeds.unsqueeze(0).repeat(mission_coords.size(0), 1).unsqueeze(-1).float()
-        cost_embedded = cost_matrix.T.unsqueeze(-1)
-        arrival_times_embedded = arrival_times.T.unsqueeze(-1)
-        
-        mission_coords_expanded = mission_coords.unsqueeze(1).repeat(1, self.num_uavs, 1)
-        # combined_embedded = torch.cat([mission_coords_expanded, mask_embedded, speeds_embedded, cost_embedded, arrival_times_embedded], dim=-1)
-        mask_weight = 1.0
-        speeds_weight = 1.0
-        cost_weight = 3.0
-        arrival_weight = 1.0
-        combined_embedded = torch.cat([mission_coords_expanded,
-                                       mask_embedded * mask_weight,
-                                       speeds_embedded * speeds_weight,
-                                       cost_embedded * cost_weight,
-                                       arrival_times_embedded * arrival_weight
-                                       ], dim=-1)
-        combined_embedded = combined_embedded.view(-1, combined_embedded.size(-1))
-        
-        new_batch = batch.repeat_interleave(self.num_uavs)
-        
-        mission_embeddings = self.gnn_encoder(combined_embedded, edge_index, new_batch)
-        
-        mission_embeddings_expanded = mission_embeddings.view(mission_coords.size(0), self.num_uavs, -1)
-        mission_embeddings_expanded = mission_embeddings_expanded.permute(1, 0, 2).contiguous().view(-1, mission_embeddings_expanded.size(2))
-        
-        uavs_info_repeated = uavs_info.repeat(mission_coords.size(0), 1)
-        speeds_repeated = speeds.repeat(mission_coords.size(0)).unsqueeze(-1)
-        
+        mask_embedded = action_mask.unsqueeze(0).repeat(self.num_uavs, 1).unsqueeze(-1).float()  # (num_uavs, num_missions, 1)
+        speeds_embedded = speeds.unsqueeze(-1).float()     # (num_uavs, 1)
+        cost_embedded = cost_matrix.float()                # (num_uavs, num_missions)
+        arrival_times_embedded = arrival_times.float()      # (num_uavs, num_missions)
+
+        # 미션 좌표 확장
+        mission_coords_expanded = mission_coords.unsqueeze(0).repeat(self.num_uavs, 1, 1)  # (num_uavs, num_missions, 2)
+
+        # 특성 결합
+        combined_embedded = torch.cat([
+            mission_coords_expanded,  # (num_uavs, num_missions, 2)
+            mask_embedded,            # (num_uavs, num_missions, 1)
+            speeds_embedded.unsqueeze(1).repeat(1, self.num_missions, 1),  # (num_uavs, num_missions, 1)
+            cost_embedded.unsqueeze(-1),             # (num_uavs, num_missions, 1)
+            arrival_times_embedded.unsqueeze(-1)     # (num_uavs, num_missions, 1)
+        ], dim=-1)  # (num_uavs, num_missions, 6)
+
+        combined_embedded = combined_embedded.view(-1, combined_embedded.size(-1))  # (num_uavs * num_missions, 6)
+
+        new_batch = batch.repeat_interleave(self.num_missions)  # (num_uavs * num_missions,)
+
+        # GNN 인코더를 통한 임베딩 생성
+        mission_embeddings = self.gnn_encoder(combined_embedded, edge_index, new_batch)  # (num_uavs * num_missions, embedding_dim)
+
+        # 임베딩을 다시 UAV와 미션 단위로 재구성
+        mission_embeddings = mission_embeddings.view(self.num_uavs, self.num_missions, -1)  # (num_uavs, num_missions, embedding_dim)
+
+        # 각 UAV의 현재 정보와 결합
+        uavs_info_repeated = uavs_info.unsqueeze(1).repeat(1, self.num_missions, 1).view(-1, 2)  # (num_uavs * num_missions, 2)
+        speeds_repeated = speeds.unsqueeze(1).repeat(1, self.num_missions).view(-1, 1)  # (num_uavs * num_missions, 1)
+
         combined = torch.cat([
-            uavs_info_repeated,
-            mission_embeddings_expanded,
-            speeds_repeated
-        ], dim=-1)
-        
-        # 결합된 특성 크기가 네트워크에 맞도록 조정
-        n_features = combined.size(-1)
-        combined = combined.view(-1, n_features)
-        
+            uavs_info_repeated,  # (num_uavs * num_missions, 2)
+            mission_embeddings.view(-1, mission_embeddings.size(-1)),  # (num_uavs * num_missions, embedding_dim)
+            speeds_repeated  # (num_uavs * num_missions, 1)
+        ], dim=-1)  # (num_uavs * num_missions, embedding_dim + 2 + 1)
+
         # 액터와 크리틱 네트워크 순전파
-        action_logits = self.actor_fc(combined)
-        action_probs = F.softmax(action_logits, dim=-1)
-        state_values = self.critic_fc(combined)
-        
-        return action_probs, state_values
+        action_logits = self.actor_fc(combined)  # (num_uavs * num_missions, num_missions)
+        action_probs = F.softmax(action_logits, dim=-1)  # (num_uavs * num_missions, num_missions)
+        state_values = self.critic_fc(combined)  # (num_uavs * num_missions, 1)
+
+        # 각 UAV별로 다시 분리
+        action_probs = action_probs.view(self.num_uavs, self.num_missions, -1)  # (num_uavs, num_missions, num_missions)
+        state_values = state_values.view(self.num_uavs, self.num_missions, -1).mean(dim=1)  # (num_uavs, 1)
+
+        return action_probs, state_values.squeeze()
 
 # ============================
 # 학습 및 검증 함수
 # ============================
-
-# 보상 정규화 (에피소드 내에서 정규화)
-def normalize_rewards(rewards):
-    rewards = torch.tensor(rewards, dtype=torch.float32)
-    mean_reward = rewards.mean()
-    std_reward = rewards.std() + 1e-5  # 분모가 0이 되는 것을 방지
-    return (rewards - mean_reward) / std_reward
 
 def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic,
                num_epochs, batch_size, device, edge_index, batch, epsilon_decay, gamma, 
@@ -755,11 +690,6 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                         arrival_times
                     )
 
-                    # DataParallel 사용 시 action_probs와 state_values의 첫 번째 차원을 평균으로 병합
-                    if isinstance(policy_net, nn.DataParallel):
-                        action_probs = action_probs.mean(dim=0)  # 평균을 취하거나 적절한 방식으로 병합
-                        state_values = state_values.mean(dim=0)  # 동일하게 병합
-
                     # UAV 선택 순서 결정
                     uav_order = compute_uav_order(env)
                     
@@ -796,6 +726,10 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
                     # 이동 시간 기록
                     travel_times.append(env.cumulative_travel_times.clone())
+
+                    # epsilon 업데이트을 스텝 단위로
+                    if epsilon > epsilon_min:
+                        epsilon *= epsilon_decay
 
                 # 여기서 보상을 정규화
                 rewards = normalize_rewards(rewards)
@@ -844,10 +778,6 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 else:
                     # policy_loss와 value_loss가 비어 있을 경우, 손실을 0으로 설정
                     loss = torch.tensor(0.0, device=device)
-
-                # epsilon 업데이트
-                if epsilon > epsilon_min:
-                    epsilon *= epsilon_decay
 
                 # 보상과 이동 시간 로깅
                 average_travel_time = torch.stack(travel_times).mean().item() if travel_times else 0.0
@@ -931,7 +861,6 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
     wandb.finish()
 
-
 # ============================
 # 검증 및 테스트 함수
 # ============================
@@ -964,7 +893,7 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
     cumulative_travel_times = torch.zeros(env.num_uavs, device=device)
     paths = [[] for _ in range(env.num_uavs)]
 
-    with torch.enable_grad():  # 기울기 계산 활성화
+    with torch.no_grad():  # 평가 시에는 기울기 계산 비활성화
         while not done:
             positions = state['positions']
             uavs_info = positions.to(device)
@@ -987,10 +916,6 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
                 arrival_times
             )
             
-            # DataParallel 사용 시 action_probs와 state_values의 첫 번째 차원을 평균으로 병합
-            if isinstance(policy_net, nn.DataParallel):
-                action_probs = action_probs.mean(dim=0)  # 평균을 취하거나 적절한 방식으로 병합
-
             # UAV 선택 순서 결정
             uav_order = compute_uav_order(env)
             # 탐험 없이 액터 정책에 따라 액션 선택 (epsilon=0.0)
@@ -1040,9 +965,6 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
         env, 
         visualization_path,
         reward=total_reward,
-        epsilon=None,
-        policy_loss=None,
-        value_loss=None,
         folder_name=f"Validation Epoch {epoch} - {wandb_name}"
     )
     
@@ -1090,7 +1012,7 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
     cumulative_travel_times = torch.zeros(env.num_uavs, device=device)
     paths = [[] for _ in range(env.num_uavs)]
 
-    with torch.enable_grad():  # 기울기 계산 활성화
+    with torch.no_grad():  # 평가 시에는 기울기 계산 비활성화
         while not done:
             positions = state['positions']
             uavs_info = positions.to(device)
@@ -1113,10 +1035,6 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
                 arrival_times
             )
             
-            # DataParallel 사용 시 action_probs와 state_values의 첫 번째 차원을 평균으로 병합
-            if isinstance(policy_net, nn.DataParallel):
-                action_probs = action_probs.mean(dim=0)  # 평균을 취하거나 적절한 방식으로 병합
-
             # UAV 선택 순서 결정
             uav_order = compute_uav_order(env)
             # 탐험 없이 액터 정책에 따라 액션 선택 (epsilon=0.0)
@@ -1162,9 +1080,6 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
         env, 
         visualization_path,
         reward=total_reward,
-        epsilon=None,
-        policy_loss=None,
-        value_loss=None,
         folder_name=f"Test - {wandb_name}"
     )
     
@@ -1329,9 +1244,9 @@ def main():
     parser.add_argument('--num_epochs', type=int, default=20000, help="에폭 수")
     parser.add_argument('--batch_size', type=int, default=1024, help="배치 크기")
     parser.add_argument('--epsilon_min', type=float, default=0.05, help="Epsilon 최소치")
-    parser.add_argument('--epsilon_decay', type=float, default=0.995, help="Epsilon 감소율")
-    parser.add_argument('--gamma', type=float, default=0.99, help="할인율 (gamma)")
-    parser.add_argument('--lr_actor', type=float, default=3e-4, help="액터 학습률")
+    parser.add_argument('--epsilon_decay', type=float, default=0.999, help="Epsilon 감소율")
+    parser.add_argument('--gamma', type=float, default=0.1, help="할인율 (gamma)")
+    parser.add_argument('--lr_actor', type=float, default=1e-4, help="액터 학습률")
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="크리틱 학습률")
     parser.add_argument('--weight_decay_actor', type=float, default=1e-5, help="액터 옵티마이저의 weight decay")
     parser.add_argument('--weight_decay_critic', type=float, default=1e-5, help="크리틱 옵티마이저의 weight decay")
@@ -1356,15 +1271,13 @@ def main():
     parser.add_argument('--beta', type=float, default=0.5, help="혼합 보상 시 전체 소요 시간 합 패널티 가중치 (reward_type='mixed'일 때 사용)")
     
     # 2-opt 사용 여부 추가
-    parser.add_argument('--use_2opt', action='store_false', help="2-opt 알고리즘을 학습에 포함 여부 확인")
+    parser.add_argument('--use_2opt', action='store_true', help="2-opt 알고리즘을 학습에 포함 여부 확인")
     
     # 결과 디렉토리 추가
     parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/epsilon_greedy/", help="결과 저장 디렉토리")
     
     # WandB 이름 인자 추가
     parser.add_argument('--name', type=str, default='epsilon_greedy', help="WandB run name")
-    
-
     
     args = parser.parse_args()
     
@@ -1380,17 +1293,15 @@ def main():
 
     # 나머지 인자 파싱 (커맨드라인 인자가 JSON 파일의 파라미터를 오버라이드)
     args = parser.parse_args()
-
-    
     
     # 장치 설정
     # GPU 인자 처리
     if torch.cuda.is_available() and args.gpu:
         gpu_indices = [int(x) for x in args.gpu.split(',')]
         num_gpus = len(gpu_indices)
+        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
         if num_gpus > 1:
-            device = torch.device(f"cuda:{gpu_indices[0]}")
-            os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
+            device = torch.device("cuda")
             print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
         else:
             device = torch.device(f"cuda:{gpu_indices[0]}")
@@ -1437,7 +1348,7 @@ def main():
     ).to(device)
     
     # DataParallel 사용 가능 시 적용
-    if num_gpus > 1:
+    if torch.cuda.is_available() and 'num_gpus' in locals() and num_gpus > 1:
         policy_net = nn.DataParallel(policy_net)
 
     # 옵티마이저 초기화
@@ -1504,7 +1415,7 @@ def main():
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
             checkpoints_path=checkpoints_path,
-            patience=10,
+            patience=5,
             wandb_name=args.name,  # WandB 이름 전달
             epsilon_minimum=args.epsilon_min
         )
