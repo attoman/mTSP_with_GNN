@@ -1385,21 +1385,19 @@ def main():
     
     # 장치 설정
     # GPU 인자 처리
-    gpu_indices = [int(x) for x in args.gpu.split(',')]
-    num_gpus = len(gpu_indices)
-    if num_gpus > 8:
-        raise ValueError("최대 8개의 GPU만 지원됩니다.")
-    for gpu in gpu_indices:
-        if gpu < 0 or gpu >= torch.cuda.device_count():
-            raise ValueError(f"GPU 인덱스 {gpu}는 사용 불가능합니다. 사용 가능한 GPU 인덱스: 0-{torch.cuda.device_count()-1}")
-    
-    if num_gpus > 1:
-        device = torch.device(f"cuda:{gpu_indices[0]}")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
-        print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
-    elif num_gpus == 1:
-        device = torch.device(f"cuda:{gpu_indices[0]}")
-        print(f"GPU {gpu_indices[0]}를 사용합니다.")
+    if torch.cuda.is_available() and args.gpu:
+        gpu_indices = [int(x) for x in args.gpu.split(',')]
+        num_gpus = len(gpu_indices)
+        if num_gpus > 1:
+            device = torch.device(f"cuda:{gpu_indices[0]}")
+            os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
+            print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
+        else:
+            device = torch.device(f"cuda:{gpu_indices[0]}")
+            print(f"GPU {gpu_indices[0]}를 사용합니다.")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("MPS를 사용합니다.")
     else:
         device = torch.device("cpu")
         print("CPU를 사용합니다.")

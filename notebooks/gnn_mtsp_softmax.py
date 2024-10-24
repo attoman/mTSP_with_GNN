@@ -680,7 +680,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                num_epochs, batch_size, device, edge_index, batch, epsilon_decay, gamma, 
                reward_type='total', alpha=0.5, beta=0.5,
                entropy_coeff=0.01,  # 기본값 설정
-               start_epoch=1, checkpoint_path=None, results_path=None, checkpoints_path=None, patience=10, wandb_name="run", epsilon_minimum=0.1):
+               start_epoch=1, checkpoint_path=None, results_path=None, checkpoints_path=None, patience=10, wandb_name="run", epsilon_minimum=0.1, temperature=1.0):
 
     # WandB 초기화
     wandb.init(project="multi_uav_mission", name=wandb_name, config={
@@ -1367,7 +1367,7 @@ def main():
     parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/softmax/", help="결과 저장 디렉토리")
     parser.add_argument('--name', type=str, default='softmax', help="WandB run name")
     
-    parser.add_argument('--temperature', type=float, default=1.0, help="Softmax 탐험의 온도 매개변수 (tau)")
+    parser.add_argument('--temperature', type=float, default=2.0, help="Softmax 탐험의 온도 매개변수 (tau)")
 
     # 먼저 --config 인자를 파싱
     args_config, remaining_argv = parser.parse_known_args()
@@ -1385,21 +1385,19 @@ def main():
 
     # 장치 설정
     # GPU 인자 처리
-    gpu_indices = [int(x) for x in args.gpu.split(',')]
-    num_gpus = len(gpu_indices)
-    if num_gpus > 8:
-        raise ValueError("최대 8개의 GPU만 지원됩니다.")
-    for gpu in gpu_indices:
-        if gpu < 0 or gpu >= torch.cuda.device_count():
-            raise ValueError(f"GPU 인덱스 {gpu}는 사용 불가능합니다. 사용 가능한 GPU 인덱스: 0-{torch.cuda.device_count()-1}")
-    
-    if num_gpus > 1:
-        device = torch.device(f"cuda:{gpu_indices[0]}")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
-        print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
-    elif num_gpus == 1:
-        device = torch.device(f"cuda:{gpu_indices[0]}")
-        print(f"GPU {gpu_indices[0]}를 사용합니다.")
+    if torch.cuda.is_available() and args.gpu:
+        gpu_indices = [int(x) for x in args.gpu.split(',')]
+        num_gpus = len(gpu_indices)
+        if num_gpus > 1:
+            device = torch.device(f"cuda:{gpu_indices[0]}")
+            os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
+            print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
+        else:
+            device = torch.device(f"cuda:{gpu_indices[0]}")
+            print(f"GPU {gpu_indices[0]}를 사용합니다.")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("MPS를 사용합니다.")
     else:
         device = torch.device("cpu")
         print("CPU를 사용합니다.")
@@ -1498,7 +1496,7 @@ def main():
             alpha=args.alpha,
             beta=args.beta,
             wandb_name=args.name,
-            temperature=args.temperature  # 추가된 매개변수 전달
+            temperature=1.0 # 추가된 매개변수 전달
         )
     else:
         train_model(
@@ -1509,6 +1507,7 @@ def main():
             optimizer_critic=optimizer_critic,
             scheduler_actor=scheduler_actor,
             scheduler_critic=scheduler_critic,
+            checkpoint_path=args.checkpoint_path,
             num_epochs=args.num_epochs,
             batch_size=args.batch_size,
             device=device,
