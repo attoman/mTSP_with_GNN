@@ -1353,9 +1353,9 @@ def main():
     parser.add_argument('--use_2opt', action='store_false', help="2-opt 알고리즘을 학습에 포함 여부 확인")
     
     parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/boltzmann/", help="결과 저장 디렉토리")
-    parser.add_argument('--name', type=str, default='softmax', help="WandB run name")
+    parser.add_argument('--name', type=str, default='boltzmann', help="WandB run name")
     
-    parser.add_argument('--temperature', type=float, default=1.0, help="Softmax 탐험의 온도 매개변수 (tau)")
+    parser.add_argument('--temperature', type=float, default=1.0, help="boltzmann 탐험의 온도 매개변수 (tau)")
 
     # 먼저 --config 인자를 파싱
     args_config, remaining_argv = parser.parse_known_args()
