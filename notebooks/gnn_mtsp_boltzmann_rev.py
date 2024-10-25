@@ -815,6 +815,14 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
     best_validation_reward = -float('inf')
     epochs_no_improve = 0
+    
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        policy_net.load_state_dict(checkpoint['model_state_dict'])
+        print(f"체크포인트 '{checkpoint_path}'가 로드되었습니다. 학습을 다시 시작합니다.")
+    else:
+        print(f"체크포인트 '{checkpoint_path}'를 입력이 없습니다. 학습을 시작합니다.")
+        pass
 
     try:
         for epoch in tqdm(range(start_epoch, num_epochs + 1), desc="Epochs Progress", position=0):
