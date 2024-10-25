@@ -97,13 +97,14 @@ def calculate_cost_matrix(uav_positions, mission_coords, speeds):
     """
     num_uavs = uav_positions.size(0)
     num_missions = mission_coords.size(0)
-    
+    dist_matrix = torch.zeros((num_uavs, num_missions), device=uav_positions.device)
     timetogo_matrix = torch.zeros((num_uavs, num_missions), device=uav_positions.device)
     
     for i in range(num_uavs):
         for j in range(num_missions):
-            dist_matrix = calculate_distance(uav_positions[i], mission_coords[j])
-            timetogo_matrix[i, j] = dist_matrix / (speeds[i] + 1e-5)
+            dist = calculate_distance(uav_positions[i], mission_coords[j])
+            dist_matrix[i, j] = dist
+            timetogo_matrix[i, j] = dist / (speeds[i] + 1e-5)
     
     return timetogo_matrix, dist_matrix
 
@@ -703,23 +704,25 @@ class ImprovedActorCriticNetwork(nn.Module):
         Returns:
             tuple: 액션 확률과 상태 값.
         """
-        # GNN 인코더를 위한 입력 전처리
-        mask_embedded = action_mask.unsqueeze(-1).float()  # (num_uavs, num_missions, 1)
-        speeds_embedded = speeds.unsqueeze(-1).float()     # (num_uavs, 1)
-        dist_embedded = dist_matrix.float()                # (num_uavs, num_missions)
-        timetogo_embedded = timetogo_matrix.float()      # (num_uavs, num_missions)
 
-        # 미션 좌표 확장
-        mission_coords_expanded = mission_coords.unsqueeze(0).repeat(self.num_uavs, 1, 1)  # (num_uavs, num_missions, 2)
+        # 각 텐서를 3차원으로 맞춥니다.
+        mask_embedded =  action_mask.unsqueeze(-1).float()  # (num_uavs, num_missions, 1)
+        speeds_embedded = speeds.unsqueeze(-1).unsqueeze(1).repeat(1, mission_coords.size(0), 1)  # (num_uavs, num_missions, 1)
+        dist_embedded = dist_matrix.unsqueeze(-1)  # (num_uavs, num_missions, 1)
+        timetogo_embedded = timetogo_matrix.unsqueeze(-1)  # (num_uavs, num_missions, 1)
+        
+        # 미션 좌표를 각 UAV에 대해 확장하여 맞춥니다.
+        mission_coords_expanded = mission_coords.unsqueeze(0).repeat(uavs_info.size(0), 1, 1)  # (num_uavs, num_missions, 2)
 
-        # 특성 결합
+        # 텐서 결합
         combined_embedded = torch.cat([
             mission_coords_expanded,  # (num_uavs, num_missions, 2)
             mask_embedded,            # (num_uavs, num_missions, 1)
-            speeds_embedded.unsqueeze(1).repeat(1, self.num_missions, 1),  # (num_uavs, num_missions, 1)
-            dist_embedded.unsqueeze(-1),             # (num_uavs, num_missions, 1)
-            timetogo_embedded.unsqueeze(-1)     # (num_uavs, num_missions, 1)
-        ], dim=-1)  # (num_uavs, num_missions, 6)
+            speeds_embedded,          # (num_uavs, num_missions, 1)
+            dist_embedded,            # (num_uavs, num_missions, 1)
+            timetogo_embedded         # (num_uavs, num_missions, 1)
+        ], dim=-1)  # 최종 크기: (num_uavs, num_missions, 6)
+
 
         combined_embedded = combined_embedded.view(-1, combined_embedded.size(-1))  # (num_uavs * num_missions, 6)
 
@@ -734,7 +737,7 @@ class ImprovedActorCriticNetwork(nn.Module):
         # 각 UAV의 임베딩을 평균하여 단일 임베딩 생성
         uav_embeddings = mission_embeddings.mean(dim=1)  # (num_uavs, embedding_dim)
 
-        # UAV 정보와 임베딩 결합
+        # # UAV 정보와 임베딩 결합 프린팅
         # print(f"uavs_info shape: {uavs_info.shape}")          # (num_uavs, 2)
         # print(f"uav_embeddings shape: {uav_embeddings.shape}")# (num_uavs, embedding_dim)
         # print(f"speeds_embedded shape: {speeds_embedded.shape}")  # (num_uavs, 1)
@@ -742,7 +745,7 @@ class ImprovedActorCriticNetwork(nn.Module):
         combined = torch.cat([
             uavs_info,          # (num_uavs, 2)
             uav_embeddings,     # (num_uavs, embedding_dim)
-            speeds_embedded     # (num_uavs, 1)
+            speeds.unsqueeze(-1)   # (num_uavs, 1)
         ], dim=-1)  # (num_uavs, embedding_dim + 3)
         # print(f"combined shape: {combined.shape}")            # (num_uavs, embedding_dim + 3)
 
@@ -819,10 +822,15 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         policy_net.load_state_dict(checkpoint['model_state_dict'])
+        optimizer_actor.load_state_dict(checkpoint['optimizer_actor_state_dict'])
+        optimizer_critic.load_state_dict(checkpoint['optimizer_critic_state_dict'])
+        # 옵티마이저 상태를 새 GPU에 맞게 업데이트
+        for optimizer in [optimizer_actor, optimizer_critic]:
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
         print(f"체크포인트 '{checkpoint_path}'가 로드되었습니다. 학습을 다시 시작합니다.")
-    else:
-        print(f"체크포인트 '{checkpoint_path}'를 입력이 없습니다. 학습을 시작합니다.")
-        pass
 
     try:
         for epoch in tqdm(range(start_epoch, num_epochs + 1), desc="Epochs Progress", position=0):
@@ -1499,7 +1507,8 @@ def main():
     if torch.cuda.is_available() and args.gpu:
         gpu_indices = [int(x) for x in args.gpu.split(',')]
         num_gpus = len(gpu_indices)
-        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
+        # os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(map(str, gpu_indices))
+        os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3,4,5,6,7"
         if num_gpus > 1:
             device = torch.device("cuda")
             print(f"{num_gpus}개의 GPU {gpu_indices}를 사용합니다.")
