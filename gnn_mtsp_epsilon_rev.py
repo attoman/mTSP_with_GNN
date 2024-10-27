@@ -1142,11 +1142,11 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
 
             # 보상 계산
             if reward_type == 'max':
-                reward = compute_reward_max_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
+                reward = compute_reward_max_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'total':
-                reward = compute_reward_total_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
+                reward = compute_reward_total_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
-                reward = compute_reward_mixed(env, timetogo_matrix.max().itme(), alpha=alpha, beta=beta, use_2opt=use_2opt)
+                reward = compute_reward_mixed(env, timetogo_matrix.max().item(), alpha=alpha, beta=beta, use_2opt=use_2opt)
             else:
                 raise ValueError(f"Unknown reward_type: {reward_type}")
 
