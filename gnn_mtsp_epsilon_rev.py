@@ -976,6 +976,11 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 # tqdm 진행 표시줄에 정보 업데이트
                 epoch_pbar.set_description(f"에폭 {epoch}/{num_epochs} | 배치 {batch_idx+1}/{batch_size} | 보상 {rewards[-1]:.2f} | 손실 {loss.item():.4f} | Epsilon {epsilon:.4f}")
 
+                uav_logs = {}
+                for i in range(env.num_uavs):
+                    uav_logs[f"uav_{i}_travel_time"] = env.cumulative_travel_times[i].item()
+                    uav_logs[f"uav_{i}_assignments"] = len(env.paths[i])
+
                 # WandB에 로그 기록
                 wandb.log({
                     "episode": episode,
@@ -988,8 +993,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     "epsilon": epsilon,
                     "entropy": entropy_total.item() if policy_loss and value_loss else 0,
                     "average_travel_time": average_travel_time,  # 평균 이동 시간 추가
-                    "uav_travel_times": env.cumulative_travel_times.tolist(),  # UAV별 이동 시간 추가
-                    "uav_assignments": [len(path) for path in env.paths],  # UAV별 할당된 미션 수
+                    **uav_logs,  # 각 UAV별 이동 시간 및 할당 미션 수를 포함
                     "entropy_coeff": entropy_coeff,  # 엔트로피 가중치 로깅
                     "action_probs": wandb.Histogram(action_probs.detach().cpu().numpy())
                 })
