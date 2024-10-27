@@ -167,7 +167,7 @@ def compute_reward_total_time(env, max_possible_time=1000, use_2opt=True):
 
 
 
-def compute_reward_mixed(env, alpha=0.5, beta=0.5, max_possible_time=1000, use_2opt=True):
+def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=1, max_possible_time=1000, use_2opt=True):
     """
     2-opt 최적화를 적용하여 혼합 이동 시간이 작을수록 높은 보상이 주어지도록 보상을 계산합니다.
     
@@ -191,9 +191,9 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, max_possible_time=1000, use_2
 
     max_travel_time = optimized_travel_times.max().item()
     total_travel_time = optimized_travel_times.sum().item()
-    average_travel_time = optimized_travel_times.mean().item()
+    travel_time_variance = env.cumulative_travel_times.var().item()
 
-    combined_travel_time = alpha * max_travel_time + beta * total_travel_time
+    combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * travel_time_variance
 
     # NaN 검사 및 보상 계산 방지
     if torch.isnan(torch.tensor(combined_travel_time)) or combined_travel_time == 0:
@@ -233,8 +233,8 @@ def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alph
     elif reward_type == 'mixed':
         max_travel_time = optimized_travel_times.max().item()
         total_travel_time = optimized_travel_times.sum().item()
-        average_travel_time = optimized_travel_times.mean().item()
-        combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * average_travel_time
+        travel_time_variance = env.cumulative_travel_times.var().item()
+        combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * travel_time_variance
         reward = max_possible_reward / (combined_travel_time + 1)
     else:
         raise ValueError(f"Unknown reward_type: {reward_type}")
@@ -753,7 +753,7 @@ class ImprovedActorCriticNetwork(nn.Module):
         mission_embeddings = mission_embeddings.view(self.num_uavs, self.num_missions, -1)  # (num_uavs, num_missions, embedding_dim)
 
         # 각 UAV의 임베딩을 평균하여 단일 임베딩 생성
-        uav_embeddings = mission_embeddings.mean(dim=1)  # (num_uavs, embedding_dim)
+        uav_embeddings = mission_embeddings.sum(dim=1)  # (num_uavs, embedding_dim)
 
         # 결합
         combined = torch.cat([
@@ -785,8 +785,8 @@ class ImprovedActorCriticNetwork(nn.Module):
 # ============================
 
 def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic,
-               num_epochs, batch_size, device, edge_index, batch, temperature, gamma, 
-               reward_type='total', alpha=0.5, beta=0.5,
+               num_epochs, batch_size, device, edge_index, batch, temperature, lr_gamma, 
+               reward_type='total', alpha=0.5, beta=0.5, gamma=0.5,
                entropy_coeff=0.01,  # 기본값 설정
                start_epoch=1, checkpoint_path=None, results_path=None, checkpoints_path=None, patience=10, wandb_name="run", use_2opt=False):
     
@@ -798,7 +798,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
         "learning_rate_critic": optimizer_critic.param_groups[0]['lr'],
         "weight_decay_actor": optimizer_actor.param_groups[0]['weight_decay'],
         "weight_decay_critic": optimizer_critic.param_groups[0]['weight_decay'],
-        "gamma": gamma,
+        "lr_gamma": lr_gamma,
         "patience": patience,
         "gnn_dropout": policy_net.module.gnn_encoder.gnn_output[1].p if isinstance(policy_net, nn.DataParallel) else policy_net.gnn_encoder.gnn_output[1].p,
         "actor_dropout": policy_net.module.actor_fc[-2].p if isinstance(policy_net, nn.DataParallel) else policy_net.actor_fc[-2].p,
@@ -817,8 +817,8 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
         "temperature": temperature  # Boltzmann 탐험 온도
     })
     
-    temperature_min = 0.2
-    temperature_decay = 0.999999
+    temperature_min = 0.5
+    temperature_decay = 0.995
 
     total_episodes = num_epochs * batch_size
     episode = (start_epoch - 1) * batch_size
@@ -904,7 +904,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     next_state, travel_time, done = env.step(actions)
 
                     # 보상 계산 (스텝마다)
-                    reward = compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha, beta, use_2opt=use_2opt)
+                    reward = compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha, beta, gamma, use_2opt=use_2opt)
                     rewards.append(reward)
                     previous_cumulative_travel_times = env.cumulative_travel_times.clone()
 
@@ -931,7 +931,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 returns = []
                 R = 0
                 for r in reversed(rewards):
-                    R = r + gamma * R
+                    R = r + lr_gamma * R
                     returns.insert(0, R)
                 returns = torch.tensor(returns, device=device)
 
@@ -1007,7 +1007,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
             # 검증
             if epoch % 5 == 0:
-                validation_reward = validate_model(val_env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, wandb_name, use_2opt=False)
+                validation_reward = validate_model(val_env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, gamma, wandb_name, use_2opt=False)
                 
                 # 조기 종료 체크
                 if validation_reward > best_validation_reward:
@@ -1060,7 +1060,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 # 검증 및 테스트 함수
 # ============================
 
-def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, wandb_name="run", use_2opt=False):
+def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, gamma, wandb_name="run", use_2opt=False):
     """
     정책 네트워크를 검증합니다.
     
@@ -1128,7 +1128,7 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
             elif reward_type == 'total':
                 reward = compute_reward_total_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
-                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
+                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, gamma=gamma, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
             else:
                 raise ValueError(f"Unknown reward_type: {reward_type}")
 
@@ -1179,7 +1179,8 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
         "validation_cumulative_travel_times": cumulative_travel_times.tolist(),
         "validation_mission_paths": wandb.Image(visualization_path),
         "epoch": epoch,
-        "feature_importance": feature_importance  # 특성 중요도 추가
+        "feature_importance": feature_importance,  # 특성 중요도 추가
+        "action_probs": wandb.Histogram(F.softmax(action_logits.detach().cpu(), dim=-1).numpy())
     })
 
     policy_net.train()  # 다시 학습 모드로 전환
@@ -1188,7 +1189,7 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
 
 
 
-def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, results_path, reward_type, alpha, beta, wandb_name="run", use_2opt=False):
+def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, results_path, reward_type, alpha, beta, gamma, wandb_name="run", use_2opt=False):
     """
     정책 네트워크를 테스트합니다.
     
@@ -1261,7 +1262,7 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
             elif reward_type == 'total':
                 reward = compute_reward_total_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
-                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
+                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, gamma=gamma, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
             else:
                 raise ValueError(f"Unknown reward_type: {reward_type}")
 
@@ -1302,7 +1303,8 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
         "test_reward": total_reward,
         "test_cumulative_travel_times": cumulative_travel_times.tolist(),
         "test_mission_paths": wandb.Image(visualization_path),
-        "feature_importance": feature_importance  # 특성 중요도 추가
+        "feature_importance": feature_importance,  # 특성 중요도 추가
+        "action_probs": wandb.Histogram(F.softmax(action_logits.detach().cpu(), dim=-1).numpy())
     })
     
     # # 선택 사항: 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
@@ -1459,7 +1461,6 @@ def main():
     # Remove epsilon related arguments
     # parser.add_argument('--epsilon_min', type=float, default=0.05, help="Epsilon 최소치")
     # parser.add_argument('--epsilon_decay', type=float, default=0.9999, help="Epsilon 감소율")
-    parser.add_argument('--gamma', type=float, default=0.1, help="할인율 (gamma)")
     parser.add_argument('--lr_actor', type=float, default=1e-4, help="액터 학습률")
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="크리틱 학습률")
     parser.add_argument('--weight_decay_actor', type=float, default=1e-5, help="액터 옵티마이저의 weight decay")
@@ -1483,6 +1484,7 @@ def main():
     parser.add_argument('--reward_type', type=str, default='mixed', choices=['max', 'total', 'mixed'], help="보상 함수 유형: 'max', 'total', 'mixed'")
     parser.add_argument('--alpha', type=float, default=0.5, help="혼합 보상 시 최대 소요 시간 패널티 가중치 (reward_type='mixed'일 때 사용)")
     parser.add_argument('--beta', type=float, default=0.5, help="혼합 보상 시 전체 소요 시간 합 패널티 가중치 (reward_type='mixed'일 때 사용)")
+    parser.add_argument('--gamma', type=float, default=0.5, help="travel_time_variance  패널티 가중치 (reward_type='mixed'일 때 사용)")
     
     # 2-opt 사용 여부 추가
     parser.add_argument('--use_2opt', action='store_true', help="2-opt 알고리즘을 학습에 포함 여부 확인")
@@ -1613,6 +1615,7 @@ def main():
             reward_type=args.reward_type,
             alpha=args.alpha,
             beta=args.beta,
+            gamma=args.gamma,
             wandb_name=test_wandb_name,
             use_2opt=args.use_2opt
         )
@@ -1642,10 +1645,11 @@ def main():
             edge_index=edge_index, 
             batch=batch, 
             temperature=args.temperature,
-            gamma=args.gamma,
+            lr_gamma=args.lr_gamma,
             reward_type=args.reward_type,
             alpha=args.alpha,
             beta=args.beta,
+            gamma=args.gamma,
             entropy_coeff=args.entropy_coeff,  # 엔트로피 가중치 전달
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
