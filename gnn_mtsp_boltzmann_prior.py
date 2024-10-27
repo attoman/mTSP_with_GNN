@@ -1161,7 +1161,8 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
 
     # 검증 모델 저장
     validation_model_save_path = os.path.join(checkpoints_path, f"validation_epoch_{epoch}.pth")
-    torch.save(policy_net.state_dict(), validation_model_save_path)
+    torch.save({'epoch': epoch,
+                        'model_state_dict': policy_net.state_dict()}, validation_model_save_path)
     
     # 가시화
     visualization_path = os.path.join(results_path, f"mission_paths_validation_epoch_{epoch}.png")
@@ -1201,6 +1202,10 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
         results_path (str): 가시화 저장 경로.
         wandb_name (str): WandB run 이름.
     """
+
+    # WandB 초기화
+    wandb.init(project="multi_uav_mission", name=wandb_name)
+
     policy_net.eval()  # 평가 모드로 전환
     
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
@@ -1300,17 +1305,17 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
         "feature_importance": feature_importance  # 특성 중요도 추가
     })
     
-    # 선택 사항: 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
-    feature_importance_path = os.path.join(results_path, "feature_importance_test.png")
-    visualize_feature_importance(feature_importance, feature_importance_path, title="Feature Importance - Test - " + wandb_name)
-    wandb.log({
-        "feature_importance_test_bar": wandb.Bar(
-            name="Feature Importance - Test",
-            x=list(feature_importance.keys()),
-            y=list(feature_importance.values())
-        ),
-        "feature_importance_test_image": wandb.Image(feature_importance_path)
-    })
+    # # 선택 사항: 특성 중요도 시각화 이미지 저장 및 WandB에 업로드
+    # feature_importance_path = os.path.join(results_path, "feature_importance_test.png")
+    # visualize_feature_importance(feature_importance, feature_importance_path, title="Feature Importance - Test - " + wandb_name)
+    # wandb.log({
+    #     "feature_importance_test_bar": wandb.Bar(
+    #         name="Feature Importance - Test",
+    #         x=list(feature_importance.keys()),
+    #         y=list(feature_importance.values())
+    #     ),
+    #     "feature_importance_test_image": wandb.Image(feature_importance_path)
+    # })
 
     policy_net.train()  # 다시 학습 모드로 전환
 
@@ -1590,19 +1595,13 @@ def main():
     # --name 인자를 사용하여 하위 폴더 생성
     name_folder = args.name
     base_dir = os.path.join(args.results_dir, num_missions_folder, current_time, name_folder)
-    images_path = os.path.join(base_dir, "images")
-    checkpoints_path = os.path.join(base_dir, "checkpoints")
-    os.makedirs(images_path, exist_ok=True)
-    os.makedirs(checkpoints_path, exist_ok=True)
 
-    # 파라미터를 JSON 파일로 저장
-    args_dict = vars(args)
-    json_file_path = os.path.join(base_dir, 'config.json')
-    with open(json_file_path, 'w') as f:
-        json.dump(args_dict, f, indent=4)    
 
     # 학습 또는 테스트 모드 실행
     if args.test_mode:
+        test_wandb_name = "test_" + args.name
+        test_path = os.path.join(args.results_dir, num_missions_folder, "tests")
+        os.makedirs(test_path, exist_ok=True)
         test_model(
             env=test_env, 
             policy_net=policy_net, 
@@ -1610,14 +1609,25 @@ def main():
             edge_index=edge_index, 
             batch=batch, 
             checkpoint_path=args.checkpoint_path,
-            results_path=images_path,
+            results_path=test_path,
             reward_type=args.reward_type,
             alpha=args.alpha,
             beta=args.beta,
-            wandb_name=args.name,
+            wandb_name=test_wandb_name,
             use_2opt=args.use_2opt
         )
     else:
+        images_path = os.path.join(base_dir, "images")
+        checkpoints_path = os.path.join(base_dir, "checkpoints")
+        os.makedirs(images_path, exist_ok=True)
+        os.makedirs(checkpoints_path, exist_ok=True)
+
+        # 파라미터를 JSON 파일로 저장
+        args_dict = vars(args)
+        json_file_path = os.path.join(base_dir, 'config.json')
+        with open(json_file_path, 'w') as f:
+            json.dump(args_dict, f, indent=4)
+
         train_model(
             env=train_env, 
             val_env=val_env, 
