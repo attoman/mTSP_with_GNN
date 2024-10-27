@@ -84,17 +84,6 @@ def create_action_mask(state, done=False):
     return action_mask  # (num_uavs, num_missions)
 
 def calculate_cost_matrix(uav_positions, mission_coords, speeds):
-    """
-    거리와 UAV 속도를 기반으로 비용 행렬을 계산합니다.
-    
-    Args:
-        uav_positions (torch.Tensor): UAV들의 현재 위치.
-        mission_coords (torch.Tensor): 미션의 좌표.
-        speeds (torch.Tensor): UAV들의 속도.
-        
-    Returns:
-        torch.Tensor: 비용 행렬.
-    """
     num_uavs = uav_positions.size(0)
     num_missions = mission_coords.size(0)
     dist_matrix = torch.zeros((num_uavs, num_missions), device=uav_positions.device)
@@ -104,9 +93,14 @@ def calculate_cost_matrix(uav_positions, mission_coords, speeds):
         for j in range(num_missions):
             dist = calculate_distance(uav_positions[i], mission_coords[j])
             dist_matrix[i, j] = dist
-            timetogo_matrix[i, j] = dist / (speeds[i] + 1e-5)
+            timetogo_matrix[i, j] = dist / (speeds[i] + 1e-5)  # 분모에 작은 값 추가
     
+    # NaN 검사
+    dist_matrix = torch.nan_to_num(dist_matrix)
+    timetogo_matrix = torch.nan_to_num(timetogo_matrix)
+
     return timetogo_matrix, dist_matrix
+
 
 
 # ============================
@@ -133,6 +127,11 @@ def compute_reward_max_time(env, max_possible_time=1000, use_2opt=True):
         optimized_travel_times = env.cumulative_travel_times
 
     max_travel_time = optimized_travel_times.max().item()
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(max_travel_time)) or max_travel_time == 0:
+        return 0.0
+    
     reward = max_possible_time / (1 + max_travel_time)  # max_travel_time이 작을수록 보상이 커짐
     return reward
 
@@ -158,6 +157,11 @@ def compute_reward_total_time(env, max_possible_time=1000, use_2opt=True):
         optimized_travel_times = env.cumulative_travel_times
 
     total_travel_time = optimized_travel_times.sum().item()
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(total_travel_time)) or total_travel_time == 0:
+        return 0.0
+
     reward = max_possible_time / (1 + total_travel_time)  # total_travel_time이 작을수록 보상이 커짐
     return reward
 
@@ -190,8 +194,14 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, max_possible_time=1000, use_2
     average_travel_time = optimized_travel_times.mean().item()
 
     combined_travel_time = alpha * max_travel_time + beta * total_travel_time
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(combined_travel_time)) or combined_travel_time == 0:
+        return 0.0
+
     reward = max_possible_time / (1 + combined_travel_time)  # combined_travel_time이 작을수록 보상이 커짐
     return reward
+
 
 def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha=0.5, beta=0.5, gamma=0.5, use_2opt=True, max_possible_reward=1000):
     """
@@ -240,8 +250,6 @@ def clip_rewards(rewards, min_value=-1000, max_value=1000):
     """
     rewards = torch.tensor(rewards, dtype=torch.float32)
     return torch.clamp(rewards, min=min_value, max=max_value)
-
-
 
 
 def choose_action(action_probs, epsilon, uav_order, global_action_mask=None):
@@ -296,6 +304,7 @@ def choose_action(action_probs, epsilon, uav_order, global_action_mask=None):
         actions[i] = chosen_action
     
     return actions
+
 
 def apply_2opt(path, mission_coords):
     """

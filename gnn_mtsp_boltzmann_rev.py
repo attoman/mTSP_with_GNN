@@ -84,17 +84,6 @@ def create_action_mask(state, done=False):
     return action_mask  # (num_uavs, num_missions)
 
 def calculate_cost_matrix(uav_positions, mission_coords, speeds):
-    """
-    거리와 UAV 속도를 기반으로 비용 행렬을 계산합니다.
-    
-    Args:
-        uav_positions (torch.Tensor): UAV들의 현재 위치.
-        mission_coords (torch.Tensor): 미션의 좌표.
-        speeds (torch.Tensor): UAV들의 속도.
-        
-    Returns:
-        torch.Tensor: 비용 행렬.
-    """
     num_uavs = uav_positions.size(0)
     num_missions = mission_coords.size(0)
     dist_matrix = torch.zeros((num_uavs, num_missions), device=uav_positions.device)
@@ -104,9 +93,14 @@ def calculate_cost_matrix(uav_positions, mission_coords, speeds):
         for j in range(num_missions):
             dist = calculate_distance(uav_positions[i], mission_coords[j])
             dist_matrix[i, j] = dist
-            timetogo_matrix[i, j] = dist / (speeds[i] + 1e-5)
+            timetogo_matrix[i, j] = dist / (speeds[i] + 1e-5)  # 분모에 작은 값 추가
     
+    # NaN 검사
+    dist_matrix = torch.nan_to_num(dist_matrix)
+    timetogo_matrix = torch.nan_to_num(timetogo_matrix)
+
     return timetogo_matrix, dist_matrix
+
 
 
 # ============================
@@ -133,6 +127,11 @@ def compute_reward_max_time(env, max_possible_time=1000, use_2opt=True):
         optimized_travel_times = env.cumulative_travel_times
 
     max_travel_time = optimized_travel_times.max().item()
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(max_travel_time)) or max_travel_time == 0:
+        return 0.0
+    
     reward = max_possible_time / (1 + max_travel_time)  # max_travel_time이 작을수록 보상이 커짐
     return reward
 
@@ -158,6 +157,11 @@ def compute_reward_total_time(env, max_possible_time=1000, use_2opt=True):
         optimized_travel_times = env.cumulative_travel_times
 
     total_travel_time = optimized_travel_times.sum().item()
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(total_travel_time)) or total_travel_time == 0:
+        return 0.0
+
     reward = max_possible_time / (1 + total_travel_time)  # total_travel_time이 작을수록 보상이 커짐
     return reward
 
@@ -190,8 +194,15 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, max_possible_time=1000, use_2
     average_travel_time = optimized_travel_times.mean().item()
 
     combined_travel_time = alpha * max_travel_time + beta * total_travel_time
+
+    # NaN 검사 및 보상 계산 방지
+    if torch.isnan(torch.tensor(combined_travel_time)) or combined_travel_time == 0:
+        return 0.0
+
     reward = max_possible_time / (1 + combined_travel_time)  # combined_travel_time이 작을수록 보상이 커짐
     return reward
+
+
 def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha=0.5, beta=0.5, gamma=0.5, use_2opt=True, max_possible_reward=1000):
     """
     각 스텝마다 2-opt 최적화를 고려한 반비례 보상을 계산합니다.
@@ -257,29 +268,30 @@ def choose_action(action_logits, temperature, uav_order, global_action_mask=None
     num_uavs, num_missions = action_logits.shape
     actions = [-1] * num_uavs  # 초기화
     
-    for i in uav_order:
+    for i in uav_order:  # 빠른 UAV가 먼저 임무를 수행할 수 있도록 정렬된 순서로 액션을 선택
         if global_action_mask is not None:
             available_actions = (global_action_mask[i] == 0).nonzero(as_tuple=True)[0].tolist()
             if not available_actions:
-                continue  # 선택 가능한 액션이 없으면 무시
+                # 선택 가능한 액션이 없는 경우 무시하고 다음 UAV로 이동
+                continue
             logits_i = action_logits[i, available_actions]
             logits_i = logits_i / temperature
             probs_i = F.softmax(logits_i, dim=-1).detach().cpu().numpy()
+
+            # 확률이 0이거나 NaN일 경우 무작위로 선택
             if np.isnan(probs_i).any() or not np.isfinite(probs_i).all():
-                # 모든 확률이 0이거나 NaN이 포함된 경우, 무작위로 선택
                 chosen_action = random.choice(available_actions)
             else:
-                chosen_action = np.random.choice(available_actions, p=probs_i)
+                chosen_action = available_actions[np.random.choice(len(available_actions), p=probs_i)]
         else:
             logits_i = action_logits[i]
             logits_i = logits_i / temperature
             probs_i = F.softmax(logits_i, dim=-1).detach().cpu().numpy()
             if not np.isfinite(probs_i).all() or np.isnan(probs_i).any():
-                # NaN이나 Inf가 있는 경우, 무작위로 선택
                 chosen_action = random.randint(0, num_missions - 1)
             else:
                 chosen_action = np.random.choice(num_missions, p=probs_i)
-        
+
         actions[i] = chosen_action
     
     return actions
