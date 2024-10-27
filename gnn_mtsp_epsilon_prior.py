@@ -234,35 +234,12 @@ def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alph
 
 
 
-# 보상 정규화 (에피소드 내에서 정규화)
-def normalize_rewards(rewards, epsilon=1e-5):
+def clip_rewards(rewards, min_value=-1000, max_value=1000):
     """
-    보상 값을 평균과 표준편차로 정규화합니다.
-    
-    Args:
-        rewards (list or torch.Tensor): 에피소드 내 보상 리스트.
-        epsilon (float): 정규화 안정성을 위한 작은 값.
-    
-    Returns:
-        torch.Tensor: 정규화된 보상.
+    보상을 특정 범위로 제한하여 정규화 대신 클리핑 방식으로 보상을 조절합니다.
     """
     rewards = torch.tensor(rewards, dtype=torch.float32)
-    mean_reward = rewards.mean()
-    std_reward = rewards.std()
-    
-    # 표준편차가 너무 작은 경우 1로 설정하여 안정성 확보
-    if std_reward < epsilon:
-        std_reward = 1.0
-    
-    normalized_rewards = (rewards - mean_reward) / std_reward
-    
-    # NaN이나 Inf 값이 포함되어 있는지 확인하고, 문제가 있을 경우 0으로 설정
-    if torch.isnan(normalized_rewards).any() or torch.isinf(normalized_rewards).any():
-        print("Warning: NaN or Inf detected in normalized_rewards. Resetting to zeros.")
-        normalized_rewards = torch.zeros_like(normalized_rewards)
-    
-    return normalized_rewards
-
+    return torch.clamp(rewards, min=min_value, max=max_value)
 
 
 def choose_action(action_probs, dist_matrix, epsilon, uav_order, global_action_mask=None):
@@ -955,7 +932,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                         epsilon *= epsilon_decay
 
                 # 에피소드 종료 후 보상 정규화
-                rewards = normalize_rewards(rewards)
+                rewards = clip_rewards(rewards)
                 
                 # 보상에 NaN이 있는지 확인
                 if torch.isnan(rewards).any():
