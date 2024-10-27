@@ -193,9 +193,9 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=0.5, max_possible_time=
     reward = max_possible_time / (1 + combined_travel_time)  # combined_travel_time이 작을수록 보상이 커짐
     return reward
 
-def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha, beta=0.5, gamma=0.5, use_2opt=True):
+def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha=0.5, beta=0.5, gamma=0.5, use_2opt=True, max_possible_reward=1000):
     """
-    각 스텝마다 2-opt 최적화를 고려한 보상을 계산합니다.
+    각 스텝마다 2-opt 최적화를 고려한 반비례 보상을 계산합니다.
     
     Args:
         env (MissionEnvironment): 환경 인스턴스.
@@ -205,9 +205,10 @@ def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alph
         beta (float): 혼합 보상 시 total_travel_time 패널티 가중치.
         gamma (float): 혼합 보상 시 average_travel_time 패널티 가중치.
         use_2opt (bool): 2-opt 최적화 적용 여부.
+        max_possible_reward (float): 보상의 최대 한계.
         
     Returns:
-        float: 보상 값.
+        float: 반비례 보상 값.
     """
     # 2-opt 최적화 적용
     if use_2opt:
@@ -217,22 +218,20 @@ def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alph
         optimized_travel_times = env.cumulative_travel_times
 
     if reward_type == 'max':
-        reward = -optimized_travel_times.max().item()
+        reward = max_possible_reward / (optimized_travel_times.max().item() + 1)
     elif reward_type == 'total':
-        reward = -optimized_travel_times.sum().item()
+        reward = max_possible_reward / (optimized_travel_times.sum().item() + 1)
     elif reward_type == 'mixed':
         max_travel_time = optimized_travel_times.max().item()
         total_travel_time = optimized_travel_times.sum().item()
         average_travel_time = optimized_travel_times.mean().item()
-        reward = -(alpha * max_travel_time + beta * total_travel_time + gamma * average_travel_time)
+        combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * average_travel_time
+        reward = max_possible_reward / (combined_travel_time + 1)
     else:
         raise ValueError(f"Unknown reward_type: {reward_type}")
     
-    # 보상을 스케일링하여 너무 큰 값이 되지 않도록 조정
-    max_reward = 1000  # 적절한 최대 절대값 설정
-    reward = max(min(reward, max_reward), -max_reward)
-    
     return reward
+
 
 
 # 보상 정규화 (에피소드 내에서 정규화)
