@@ -163,7 +163,7 @@ def compute_reward_total_time(env, max_possible_time=1000, use_2opt=True):
 
 
 
-def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=0.5, max_possible_time=1000, use_2opt=True):
+def compute_reward_mixed(env, alpha=0.5, beta=0.5, max_possible_time=1000, use_2opt=True):
     """
     2-opt 최적화를 적용하여 혼합 이동 시간이 작을수록 높은 보상이 주어지도록 보상을 계산합니다.
     
@@ -189,7 +189,7 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=0.5, max_possible_time=
     total_travel_time = optimized_travel_times.sum().item()
     average_travel_time = optimized_travel_times.mean().item()
 
-    combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * average_travel_time
+    combined_travel_time = alpha * max_travel_time + beta * total_travel_time
     reward = max_possible_time / (1 + combined_travel_time)  # combined_travel_time이 작을수록 보상이 커짐
     return reward
 
@@ -1142,7 +1142,7 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
             elif reward_type == 'total':
                 reward = compute_reward_total_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
-                reward = compute_reward_mixed(env, timetogo_matrix.max().item(), alpha=alpha, beta=beta, use_2opt=use_2opt)
+                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
             else:
                 raise ValueError(f"Unknown reward_type: {reward_type}")
 
@@ -1267,7 +1267,7 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
             elif reward_type == 'total':
                 reward = compute_reward_total_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
-                reward = compute_reward_mixed(env, timetogo_matrix.max().itme(), alpha=alpha, beta=beta, use_2opt=use_2opt)
+                reward = compute_reward_mixed(env, alpha=alpha, beta=beta, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
             else:
                 raise ValueError(f"Unknown reward_type: {reward_type}")
 
