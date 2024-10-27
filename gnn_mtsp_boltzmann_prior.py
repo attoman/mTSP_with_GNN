@@ -967,7 +967,6 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 # tqdm 진행 표시줄에 정보 업데이트
                 epoch_pbar.set_description(f"에폭 {epoch}/{num_epochs} | 배치 {batch_idx+1}/{batch_size} | 보상 {rewards[-1]:.2f} | 손실 {loss.item():.4f} | Temperature {temperature:.4f}")
 
-
                 uav_logs = {}
                 for i in range(env.num_uavs):
                     uav_logs[f"uav_{i}_travel_time"] = env.cumulative_travel_times[i].item()
