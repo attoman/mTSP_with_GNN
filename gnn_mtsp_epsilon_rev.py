@@ -1497,10 +1497,10 @@ def main():
     parser.add_argument('--use_2opt', action='store_true', help="2-opt 알고리즘을 학습에 포함 여부 확인")
     
     # 결과 디렉토리 추가
-    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/epsilon_prior/", help="결과 저장 디렉토리")
+    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/epsilon/", help="결과 저장 디렉토리")
     
     # WandB 이름 인자 추가
-    parser.add_argument('--name', type=str, default='epsilon_prior', help="WandB run name")
+    parser.add_argument('--name', type=str, default='epsilon', help="WandB run name")
     
     args = parser.parse_args()
     
