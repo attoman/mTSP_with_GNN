@@ -913,10 +913,10 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     # 이동 시간 기록
                     travel_times.append(env.cumulative_travel_times.clone())
 
-                    # 온도 업데이트을 스텝 단위로
-                    if temperature > temperature_min:
-                        temperature *= temperature_decay
-                        temperature = max(temperature, temperature_min)
+                    # # 에피소드 마다 온도 업데이트을 스텝 단위로
+                    # if temperature > temperature_min:
+                    #     temperature *= temperature_decay
+                    #     temperature = max(temperature, temperature_min)
 
                 # 에피소드 종료 후 보상 정규화
                 rewards = clip_rewards(rewards)
@@ -1001,6 +1001,11 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
                 episode += 1
 
+            # 에폭 마다 온도 업데이트을 스텝 단위로
+            if temperature > temperature_min:
+                temperature *= temperature_decay
+                temperature = max(temperature, temperature_min)
+            
             # 학습률 스케줄러 업데이트
             scheduler_actor.step()
             scheduler_critic.step()
@@ -1258,9 +1263,9 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
 
             # 보상 계산
             if reward_type == 'max':
-                reward = compute_reward_max_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
+                reward = compute_reward_max_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'total':
-                reward = compute_reward_total_time(env, timetogo_matrix.max().itme(), use_2opt=use_2opt)
+                reward = compute_reward_total_time(env, timetogo_matrix.max().item(), use_2opt=use_2opt)
             elif reward_type == 'mixed':
                 reward = compute_reward_mixed(env, alpha=alpha, beta=beta, gamma=gamma, max_possible_time=timetogo_matrix.max().item(), use_2opt=use_2opt)
             else:
@@ -1447,7 +1452,7 @@ def main():
     parser.add_argument('--config', type=str, default=None, help="Path to a json file with configuration parameters")
     parser.add_argument('--gpu', type=str, default='1', help="사용할 GPU 인덱스 (예: '0', '0,1', '0,1,2,3')")
     parser.add_argument('--num_uavs', type=int, default=3, help="UAV의 수")
-    parser.add_argument('--num_missions', type=int, default=12, help="미션의 수")
+    parser.add_argument('--num_missions', type=int, default=22, help="미션의 수")
     parser.add_argument('--embedding_dim', type=int, default=64, help="GNN 임베딩 차원")
     parser.add_argument('--gnn_hidden_dim', type=int, default=128, help="GNN 인코더의 숨겨진 차원")
     parser.add_argument('--actor_hidden_dim', type=int, default=128, help="액터 네트워크의 숨겨진 차원")
@@ -1467,8 +1472,8 @@ def main():
     parser.add_argument('--weight_decay_critic', type=float, default=1e-5, help="크리틱 옵티마이저의 weight decay")
     parser.add_argument('--checkpoint_path', type=str, default=None, help="기존 체크포인트의 경로")
     parser.add_argument('--test_mode', action='store_true', help="테스트 모드 활성화")
-    parser.add_argument('--train_seed', type=int, default=2024, help="Train 데이터셋 시드")
-    parser.add_argument('--validation_seed', type=int, default=2025, help="Validation 데이터셋 시드")
+    parser.add_argument('--train_seed', type=int, default=20245, help="Train 데이터셋 시드")
+    parser.add_argument('--validation_seed', type=int, default=20255, help="Validation 데이터셋 시드")
     parser.add_argument('--test_seed', type=int, default=2026, help="Test 데이터셋 시드")
     parser.add_argument('--time_weight', type=float, default=2.0, help="보상 시간의 가중치")
     parser.add_argument('--lr_step_size', type=int, default=10000, help="학습률 스케줄러의 step size")
@@ -1497,8 +1502,8 @@ def main():
     
     # Add temperature parameter for Boltzmann exploration
     parser.add_argument('--temperature', type=float, default=1.8, help="Boltzmann 탐험의 온도 매개변수")
-    parser.add_argument('--temperature_decay', type=float, default=0.999999, help="Boltzmann 온도 감소율")
-    parser.add_argument('--temperature_min', type=float, default=0.2, help="Boltzmann 온도의 최소값")
+    parser.add_argument('--temperature_decay', type=float, default=0.995, help="Boltzmann 온도 감소율")
+    parser.add_argument('--temperature_min', type=float, default=0.5, help="Boltzmann 온도의 최소값")
     
     args = parser.parse_args()
     
@@ -1654,7 +1659,7 @@ def main():
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
             checkpoints_path=checkpoints_path,
-            patience=20,
+            patience=50,
             wandb_name=args.name,  # WandB 이름 전달
             use_2opt=args.use_2opt
         )

@@ -28,7 +28,7 @@ def calculate_travel_time(distance, speed):
 
 def create_edge_index(num_missions, num_uavs):
     """
-    각 UAV에 대해 모든 가능한 미션 경로를 연결하는 edge_index를 생성합니다.
+    num_uavs와 num_missions에 기반하여 동적으로 엣지를 생성
     
     Args:
         num_missions (int): 미션의 수.
@@ -48,6 +48,7 @@ def create_edge_index(num_missions, num_uavs):
         return torch.empty((2, 0), dtype=torch.long)
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     return edge_index
+
 
 
 def create_action_mask(state, done=False):
@@ -167,7 +168,7 @@ def compute_reward_total_time(env, max_possible_time=1000, use_2opt=True):
 
 
 
-def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=0.5, max_possible_time=1000, use_2opt=True):
+def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=1, max_possible_time=1000, use_2opt=True):
     """
     2-opt 최적화를 적용하여 혼합 이동 시간이 작을수록 높은 보상이 주어지도록 보상을 계산합니다.
     
@@ -202,8 +203,6 @@ def compute_reward_mixed(env, alpha=0.5, beta=0.5, gamma=0.5, max_possible_time=
     reward = max_possible_time / (1 + combined_travel_time)  # combined_travel_time이 작을수록 보상이 커짐
     return reward
 
-
-
 def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alpha=0.5, beta=0.5, gamma=0.5, use_2opt=True, max_possible_reward=1000):
     """
     각 스텝마다 2-opt 최적화를 고려한 반비례 보상을 계산합니다.
@@ -236,13 +235,13 @@ def compute_step_reward(env, previous_cumulative_travel_times, reward_type, alph
         max_travel_time = optimized_travel_times.max().item()
         total_travel_time = optimized_travel_times.sum().item()
         travel_time_variance = env.cumulative_travel_times.var().item()
-
         combined_travel_time = alpha * max_travel_time + beta * total_travel_time + gamma * travel_time_variance
         reward = max_possible_reward / (combined_travel_time + 1)
     else:
         raise ValueError(f"Unknown reward_type: {reward_type}")
     
     return reward
+
 
 
 def clip_rewards(rewards, min_value=-1000, max_value=1000):
@@ -254,70 +253,48 @@ def clip_rewards(rewards, min_value=-1000, max_value=1000):
 
 
 
-import torch.nn.functional as F
-import numpy as np
-import random
 
-def choose_action(action_logits, temperature, uav_order, global_action_mask=None):
+def choose_action(action_logits, dist_matrix, temperature, uav_order, global_action_mask=None):
     """
-    각 UAV에 대해 Boltzmann 탐험을 사용하여 행동을 선택합니다.
-
-    Args:
-        action_logits (torch.Tensor): 각 UAV에 대한 액션 로그 확률 분포. (num_uavs, num_missions)
-        temperature (float): Boltzmann 탐험의 온도 매개변수.
-        uav_order (list): UAV 선택 순서. (준비된 UAV들만 포함)
-        global_action_mask (torch.Tensor, optional): 전역 액션 마스크. (num_uavs, num_missions)
-
-    Returns:
-        list: 각 UAV가 선택한 액션.
+    가변 UAV 및 미션 수에 대응하는 유연한 액션 선택 함수.
     """
     num_uavs, num_missions = action_logits.shape
     actions = [-1] * num_uavs  # 초기화
 
-    # 액션 마스크의 복사본을 생성하여 실시간 업데이트에 사용
-    if global_action_mask is not None:
-        available_mask = global_action_mask.clone()
-    else:
-        available_mask = torch.zeros_like(action_logits, dtype=torch.bool)
-
     for i in uav_order:
         if global_action_mask is not None:
-            available_actions = (available_mask[i] == 0).nonzero(as_tuple=True)[0].tolist()
+            available_actions = (global_action_mask[i] == 0).nonzero(as_tuple=True)[0].tolist()
             if not available_actions:
-                continue  # 선택 가능한 액션이 없으면 무시
-            action_logits_i = action_logits[i, available_actions]
-            # 온도 매개변수를 적용하여 소프트맥스 확률 계산
-            logits_scaled = action_logits_i / temperature
-            probs_i = F.softmax(logits_scaled, dim=-1).detach().cpu().numpy()
-            # 확률에 NaN이 있는지 확인
+                continue  # 선택 가능한 액션이 없으면 스킵
+
+            logits_i = action_logits[i, available_actions]
+            distances = dist_matrix[i, available_actions]
+
+            # 거리 기반으로 로그 확률 조정
+            distance_weighted_logits = logits_i - distances / temperature
+            probs_i = F.softmax(distance_weighted_logits, dim=-1).detach().cpu().numpy()
+
+            # NaN 또는 유효하지 않은 확률 처리
             if np.isnan(probs_i).any() or not np.isfinite(probs_i).all():
-                # NaN이나 Inf가 있는 경우, 무작위로 선택
                 chosen_action = random.choice(available_actions)
             else:
                 chosen_action = np.random.choice(available_actions, p=probs_i)
-            # 선택된 액션을 마스크에 반영하여 다른 UAV들이 선택하지 못하도록 설정
-            available_mask[:, chosen_action] = True
+
+            # 다른 UAV가 선택한 액션을 선택하지 못하도록 마스킹
+            for j in range(num_uavs):
+                if j != i:
+                    global_action_mask[j, chosen_action] = True
         else:
-            logits_i = action_logits[i]
-            logits_scaled = logits_i / temperature
-            probs_i = F.softmax(logits_scaled, dim=-1).detach().cpu().numpy()
+            logits_i = action_logits[i] / temperature - dist_matrix[i] / temperature
+            probs_i = F.softmax(logits_i, dim=-1).detach().cpu().numpy()
             if np.isnan(probs_i).any() or not np.isfinite(probs_i).all():
-                # NaN이나 Inf가 있는 경우, 무작위로 선택
                 chosen_action = random.randint(0, num_missions - 1)
             else:
                 chosen_action = np.random.choice(num_missions, p=probs_i)
 
         actions[i] = chosen_action
 
-        # 선택된 액션 로그 출력 (디버깅용)
-        if global_action_mask is not None:
-            action_prob = probs_i[available_actions.index(chosen_action)]
-        else:
-            action_prob = probs_i[chosen_action]
-        print(f"UAV {i} selected action {chosen_action} with probability {action_prob:.4f}")
-
     return actions
-
 
 
 def apply_2opt(path, mission_coords):
@@ -367,7 +344,6 @@ def calculate_total_distance(path, mission_coords):
     return total_distance
 
 
-
 def calculate_total_travel_times(paths, mission_coords, speeds):
     """
     UAV들의 경로에 따른 총 이동 시간을 계산합니다.
@@ -402,11 +378,11 @@ def compute_uav_order(env):
     """
     # 준비된 UAV들만 선택
     ready_uavs = [i for i in range(env.num_uavs) if env.ready_for_next_action[i]]
-
-    # 랜덤하게 섞어서 순서 결정 (또는 다른 기준 사용)
-    random.shuffle(ready_uavs)
     
-    return ready_uavs
+    # 준비된 UAV들을 속도 기준으로 내림차순 정렬 (더 빠른 UAV가 먼저 선택)
+    uav_order = sorted(ready_uavs, key=lambda i: -env.speeds[i].item())
+    
+    return uav_order
 
 
 # ============================
@@ -667,6 +643,7 @@ class EnhancedGNNTransformerEncoder(nn.Module):
 # 액터-크리틱 네트워크
 # ============================
 
+
 class ImprovedActorCriticNetwork(nn.Module):
     """
     Enhanced GNN Transformer 인코더를 사용하는 액터-크리틱 네트워크.
@@ -674,7 +651,7 @@ class ImprovedActorCriticNetwork(nn.Module):
     """
     def __init__(self, num_missions, num_uavs, embedding_dim=64, gnn_hidden_dim=64, 
                  actor_hidden_dim=128, critic_hidden_dim=128,
-                 actor_layers=3, critic_layers=3, num_layers=4, heads=8,
+                 num_layers=4, heads=8,
                  gnn_dropout=0.3, actor_dropout=0.3, critic_dropout=0.3):
         super(ImprovedActorCriticNetwork, self).__init__()
         self.num_missions = num_missions
@@ -692,32 +669,25 @@ class ImprovedActorCriticNetwork(nn.Module):
             dropout=gnn_dropout
         )
 
-        # 결합된 특성 크기: 임베딩 + UAV의 2D 좌표 + UAV 속도
-        self.combined_feature_size = embedding_dim + 2 + 1
+        # 액터 공유 레이어
+        self.actor_shared = nn.Sequential(
+            nn.Linear(embedding_dim + 3, actor_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(actor_dropout)
+        )
 
-        # 액터 네트워크 동적 레이어 생성
-        actor_layers_list = []
-        actor_layers_list.append(nn.Linear(self.combined_feature_size, actor_hidden_dim))
-        actor_layers_list.append(nn.ReLU())
-        actor_layers_list.append(nn.Dropout(actor_dropout))
-        for _ in range(actor_layers - 2):
-            actor_layers_list.append(nn.Linear(actor_hidden_dim, actor_hidden_dim))
-            actor_layers_list.append(nn.ReLU())
-            actor_layers_list.append(nn.Dropout(actor_dropout))
-        actor_layers_list.append(nn.Linear(actor_hidden_dim, num_missions))
-        self.actor_fc = nn.Sequential(*actor_layers_list)
+        # 액터 출력 레이어
+        self.actor_out = nn.Linear(actor_hidden_dim, num_missions)
 
-        # 크리틱 네트워크 동적 레이어 생성
-        critic_layers_list = []
-        critic_layers_list.append(nn.Linear(self.combined_feature_size, critic_hidden_dim))
-        critic_layers_list.append(nn.ReLU())
-        critic_layers_list.append(nn.Dropout(critic_dropout))
-        for _ in range(critic_layers - 2):
-            critic_layers_list.append(nn.Linear(critic_hidden_dim, critic_hidden_dim))
-            critic_layers_list.append(nn.ReLU())
-            critic_layers_list.append(nn.Dropout(critic_dropout))
-        critic_layers_list.append(nn.Linear(critic_hidden_dim, 1))
-        self.critic_fc = nn.Sequential(*critic_layers_list)
+        # 크리틱 공유 레이어
+        self.critic_shared = nn.Sequential(
+            nn.Linear(embedding_dim + 3, critic_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(critic_dropout)
+        )
+
+        # 크리틱 출력 레이어
+        self.critic_out = nn.Linear(critic_hidden_dim, 1)
 
     def forward(self, mission_coords, edge_index, batch, uavs_info, action_mask, speeds, dist_matrix, timetogo_matrix):
         """
@@ -753,45 +723,32 @@ class ImprovedActorCriticNetwork(nn.Module):
             speeds_embedded,          # (num_uavs, num_missions, 1)
             dist_embedded,            # (num_uavs, num_missions, 1)
             timetogo_embedded         # (num_uavs, num_missions, 1)
-        ], dim=-1)  # 최종 크기: (num_uavs, num_missions, 6)
-
+        ], dim=-1)  # (num_uavs, num_missions, 6)
 
         combined_embedded = combined_embedded.view(-1, combined_embedded.size(-1))  # (num_uavs * num_missions, 6)
-
-        new_batch = batch.repeat_interleave(self.num_missions)  # (num_uavs * num_missions,)
+        new_batch = batch.repeat_interleave(mission_coords.size(0))  # (num_uavs * num_missions,)
 
         # GNN 인코더를 통한 임베딩 생성
         mission_embeddings = self.gnn_encoder(combined_embedded, edge_index, new_batch)  # (num_uavs * num_missions, embedding_dim)
-
-        # 임베딩을 다시 UAV와 미션 단위로 재구성
-        mission_embeddings = mission_embeddings.view(self.num_uavs, self.num_missions, -1)  # (num_uavs, num_missions, embedding_dim)
-
-        # 각 UAV의 임베딩을 평균하여 단일 임베딩 생성
+        mission_embeddings = mission_embeddings.view(uavs_info.size(0), mission_coords.size(0), -1)  # (num_uavs, num_missions, embedding_dim)
         uav_embeddings = mission_embeddings.sum(dim=1)  # (num_uavs, embedding_dim)
 
-        # 결합
+        # UAV의 임베딩과 추가 정보를 결합
         combined = torch.cat([
             uavs_info,          # (num_uavs, 2)
             uav_embeddings,     # (num_uavs, embedding_dim)
             speeds.unsqueeze(-1)   # (num_uavs, 1)
         ], dim=-1)  # (num_uavs, embedding_dim + 3)
 
-        # 액터와 크리틱 네트워크 순전파
-        action_logits = self.actor_fc(combined)  # (num_uavs, num_missions)
-        
-        # NaN 검사 추가
-        if torch.isnan(action_logits).any():
-            print("NaN detected in action_logits")
-        
-        action_probs = F.softmax(action_logits, dim=-1)  # (num_uavs, num_missions)
-        
-        # NaN 검사 추가
-        if torch.isnan(action_probs).any():
-            print("NaN detected in action_probs")
-        
-        state_values = self.critic_fc(combined)  # (num_uavs, 1)
-        
-        return action_logits, state_values.squeeze()
+        # 액터 네트워크
+        actor_features = self.actor_shared(combined)  # (num_uavs, actor_hidden_dim)
+        action_logits = self.actor_out(actor_features)  # (num_uavs, num_missions)
+
+        # 크리틱 네트워크
+        critic_features = self.critic_shared(combined)  # (num_uavs, critic_hidden_dim)
+        state_values = self.critic_out(critic_features).squeeze()  # (num_uavs,)
+
+        return action_logits, state_values
 
 
 # ============================
@@ -815,19 +772,19 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
         "lr_gamma": lr_gamma,
         "patience": patience,
         "gnn_dropout": policy_net.module.gnn_encoder.gnn_output[1].p if isinstance(policy_net, nn.DataParallel) else policy_net.gnn_encoder.gnn_output[1].p,
-        "actor_dropout": policy_net.module.actor_fc[-2].p if isinstance(policy_net, nn.DataParallel) else policy_net.actor_fc[-2].p,
-        "critic_dropout": policy_net.module.critic_fc[-2].p if isinstance(policy_net, nn.DataParallel) else policy_net.critic_fc[-2].p,
+        "actor_dropout": policy_net.module.actor_shared[-1].p if isinstance(policy_net, nn.DataParallel) else policy_net.actor_shared[-1].p,
+        "critic_dropout": policy_net.module.critic_shared[-1].p if isinstance(policy_net, nn.DataParallel) else policy_net.critic_shared[-1].p,
         "num_missions": env.num_missions,
         "num_uavs": env.num_uavs,
         "reward_type": reward_type,
         "alpha": alpha,
         "beta": beta,
         "entropy_coeff": entropy_coeff,  # 엔트로피 가중치 로깅
-        "actor_layers": len(policy_net.module.actor_fc) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.actor_fc) // 3,
-        "critic_layers": len(policy_net.module.critic_fc) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.critic_fc) // 3,
+        "actor_layers": len(policy_net.module.actor_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.actor_shared) // 3,
+        "critic_layers": len(policy_net.module.critic_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.critic_shared) // 3,
         "gnn_hidden_dim": policy_net.module.gnn_encoder.layers[0].out_channels // policy_net.module.gnn_encoder.layers[0].heads if isinstance(policy_net, nn.DataParallel) else policy_net.gnn_encoder.layers[0].out_channels // policy_net.gnn_encoder.layers[0].heads,
-        "actor_hidden_dim": policy_net.module.actor_fc[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.actor_fc[0].in_features,
-        "critic_hidden_dim": policy_net.module.critic_fc[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.critic_fc[0].in_features,
+        "actor_hidden_dim": policy_net.module.actor_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.actor_shared[0].in_features,
+        "critic_hidden_dim": policy_net.module.critic_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.critic_shared[0].in_features,
         "temperature": temperature  # Boltzmann 탐험 온도
     })
     
@@ -896,7 +853,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     uav_order = compute_uav_order(env)
                     
                     # 액션 선택
-                    actions = choose_action(action_logits, temperature, uav_order, global_action_mask=action_mask)
+                    actions = choose_action(action_logits, dist_matrix, temperature, uav_order, global_action_mask=action_mask)
 
                     # 각 UAV의 액션에 대한 log_prob과 state_value 수집
                     for i, action in enumerate(actions):
@@ -927,7 +884,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     # 이동 시간 기록
                     travel_times.append(env.cumulative_travel_times.clone())
 
-                    # # 에피소드 마다 온도 업데이트을 스텝 단위로
+                    # # 에피소드 별로 온도 업데이트
                     # if temperature > temperature_min:
                     #     temperature *= temperature_decay
                     #     temperature = max(temperature, temperature_min)
@@ -939,6 +896,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 if torch.isnan(rewards).any():
                     print(f"NaN detected in rewards at Epoch {epoch}, Batch {batch_idx+1}")
                     rewards = torch.zeros_like(rewards)
+
 
                 # 할인율을 적용한 누적 보상 계산
                 returns = []
@@ -990,12 +948,10 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                 # tqdm 진행 표시줄에 정보 업데이트
                 epoch_pbar.set_description(f"에폭 {epoch}/{num_epochs} | 배치 {batch_idx+1}/{batch_size} | 보상 {rewards[-1]:.2f} | 손실 {loss.item():.4f} | Temperature {temperature:.4f}")
 
-
                 uav_logs = {}
                 for i in range(env.num_uavs):
                     uav_logs[f"uav_{i}_travel_time"] = env.cumulative_travel_times[i].item()
                     uav_logs[f"uav_{i}_assignments"] = len(env.paths[i])
-
 
                 # WandB에 로그 기록
                 wandb.log({
@@ -1008,7 +964,13 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
                     "reward": rewards[-1],
                     "temperature": temperature,
                     "entropy": entropy_total.item() if policy_loss and value_loss else 0,
-                    "average_travel_time": average_travel_time,  # 평균 이동 시간 추가
+                    "actor_dropout": policy_net.module.actor_shared[-1].p if isinstance(policy_net, nn.DataParallel) else policy_net.actor_shared[-1].p,
+                    "critic_dropout": policy_net.module.critic_shared[-1].p if isinstance(policy_net, nn.DataParallel) else policy_net.critic_shared[-1].p,
+                    "actor_layers": len(policy_net.module.actor_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.actor_shared) // 3,
+                    "critic_layers": len(policy_net.module.critic_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.critic_shared) // 3,
+                    "gnn_hidden_dim": policy_net.module.gnn_encoder.layers[0].out_channels // policy_net.module.gnn_encoder.layers[0].heads if isinstance(policy_net, nn.DataParallel) else policy_net.gnn_encoder.layers[0].out_channels // policy_net.gnn_encoder.layers[0].heads,
+                    "actor_hidden_dim": policy_net.module.actor_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.actor_shared[0].in_features,
+                    "critic_hidden_dim": policy_net.module.critic_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.critic_shared[0].in_features,
                     **uav_logs,  # 각 UAV별 이동 시간 및 할당 미션 수를 포함
                     "entropy_coeff": entropy_coeff,  # 엔트로피 가중치 로깅
                     "action_probs": wandb.Histogram(F.softmax(action_logits.detach().cpu(), dim=-1).numpy())
@@ -1016,7 +978,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
 
                 episode += 1
 
-            # 에폭 마다 온도 업데이트을 스텝 단위로
+            # 에폭 별로 온도 업데이트
             if temperature > temperature_min:
                 temperature *= temperature_decay
                 temperature = max(temperature, temperature_min)
@@ -1137,7 +1099,7 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
             # UAV 선택 순서 결정 (준비된 UAV들만 포함)
             uav_order = compute_uav_order(env)
             # 탐험 없이 액터 정책에 따라 액션 선택 (온도= 낮음, 예: 매우 낮은 온도)
-            actions = choose_action(action_logits, temperature=0.001, uav_order=uav_order, global_action_mask=action_mask)
+            actions = choose_action(action_logits, dist_matrix, temperature=0.0001, uav_order=uav_order, global_action_mask=action_mask)
 
             # 환경 스텝
             next_state, travel_time, done = env.step(actions)
@@ -1200,7 +1162,12 @@ def validate_model(env, policy_net, device, edge_index, batch, checkpoints_path,
         "validation_mission_paths": wandb.Image(visualization_path),
         "epoch": epoch,
         "feature_importance": feature_importance,  # 특성 중요도 추가
+        "actor_layers": len(policy_net.module.actor_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.actor_shared) // 3,
+        "critic_layers": len(policy_net.module.critic_shared) // 3 if isinstance(policy_net, nn.DataParallel) else len(policy_net.critic_shared) // 3,
+        "actor_hidden_dim": policy_net.module.actor_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.actor_shared[0].in_features,
+        "critic_hidden_dim": policy_net.module.critic_shared[0].in_features if isinstance(policy_net, nn.DataParallel) else policy_net.critic_shared[0].in_features,
         "action_probs": wandb.Histogram(F.softmax(action_logits.detach().cpu(), dim=-1).numpy())
+        
     })
 
     policy_net.train()  # 다시 학습 모드로 전환
@@ -1271,7 +1238,7 @@ def test_model(env, policy_net, device, edge_index, batch, checkpoint_path, resu
             # UAV 선택 순서 결정
             uav_order = compute_uav_order(env)
             # 탐험 없이 액터 정책에 따라 액션 선택 (온도= 낮음, 예: 매우 낮은 온도)
-            actions = choose_action(action_logits, temperature=0.001, uav_order=uav_order, global_action_mask=action_mask)
+            actions = choose_action(action_logits, dist_matrix, temperature=0.001, uav_order=uav_order, global_action_mask=action_mask)
 
             # 환경 스텝
             next_state, travel_time, done = env.step(actions)
@@ -1465,7 +1432,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description="액터-크리틱 GNN을 이용한 다중 UAV 미션 할당 및 최적화")
     parser.add_argument('--config', type=str, default=None, help="Path to a json file with configuration parameters")
-    parser.add_argument('--gpu', type=str, default='1', help="사용할 GPU 인덱스 (예: '0', '0,1', '0,1,2,3')")
+    parser.add_argument('--gpu', type=str, default='0', help="사용할 GPU 인덱스 (예: '0', '0,1', '0,1,2,3')")
     parser.add_argument('--num_uavs', type=int, default=3, help="UAV의 수")
     parser.add_argument('--num_missions', type=int, default=22, help="미션의 수")
     parser.add_argument('--embedding_dim', type=int, default=64, help="GNN 임베딩 차원")
@@ -1481,7 +1448,6 @@ def main():
     # Remove epsilon related arguments
     # parser.add_argument('--epsilon_min', type=float, default=0.05, help="Epsilon 최소치")
     # parser.add_argument('--epsilon_decay', type=float, default=0.9999, help="Epsilon 감소율")
-
     parser.add_argument('--lr_actor', type=float, default=1e-4, help="액터 학습률")
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="크리틱 학습률")
     parser.add_argument('--weight_decay_actor', type=float, default=1e-5, help="액터 옵티마이저의 weight decay")
@@ -1511,15 +1477,15 @@ def main():
     parser.add_argument('--use_2opt', action='store_true', help="2-opt 알고리즘을 학습에 포함 여부 확인")
     
     # 결과 디렉토리 추가
-    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/boltzmann/", help="결과 저장 디렉토리")
+    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/boltzmann_prior/", help="결과 저장 디렉토리")
     
     # WandB 이름 인자 추가
-    parser.add_argument('--name', type=str, default='boltzmann', help="WandB run name")
+    parser.add_argument('--name', type=str, default='boltzmann_prior', help="WandB run name")
     
     # Add temperature parameter for Boltzmann exploration
     parser.add_argument('--temperature', type=float, default=1.8, help="Boltzmann 탐험의 온도 매개변수")
-    parser.add_argument('--temperature_decay', type=float, default=0.995, help="Boltzmann 온도 감소율")
-    parser.add_argument('--temperature_min', type=float, default=0.5, help="Boltzmann 온도의 최소값")
+    parser.add_argument('--temperature_decay', type=float, default=0.999999, help="Boltzmann 온도 감소율")
+    parser.add_argument('--temperature_min', type=float, default=0.2, help="Boltzmann 온도의 최소값")
     
     args = parser.parse_args()
     
@@ -1538,6 +1504,7 @@ def main():
     
     # 장치 설정
     # GPU 인자 처리
+    num_gpus = 1  # 기본값 설정
     if torch.cuda.is_available() and args.gpu:
         gpu_indices = [int(x) for x in args.gpu.split(',')]
         num_gpus = len(gpu_indices)
@@ -1582,8 +1549,6 @@ def main():
         gnn_hidden_dim=args.gnn_hidden_dim,
         actor_hidden_dim=args.actor_hidden_dim,
         critic_hidden_dim=args.critic_hidden_dim,
-        actor_layers=args.actor_layers,
-        critic_layers=args.critic_layers,
         num_layers=args.num_layers,
         heads=args.heads,
         gnn_dropout=args.gnn_dropout,
@@ -1595,15 +1560,18 @@ def main():
     if torch.cuda.is_available() and 'num_gpus' in locals() and num_gpus > 1:
         policy_net = nn.DataParallel(policy_net)
 
-    # 옵티마이저 초기화
+    # 옵티마이저 초기화 수정
     if isinstance(policy_net, nn.DataParallel):
-        optimizer_actor = optim.Adam(policy_net.module.actor_fc.parameters(), lr=args.lr_actor, weight_decay=args.weight_decay_actor)
-        optimizer_critic = optim.Adam(policy_net.module.critic_fc.parameters(), lr=args.lr_critic, weight_decay=args.weight_decay_critic)
+        actor_params = list(policy_net.module.actor_shared.parameters()) + list(policy_net.module.actor_out.parameters())
+        critic_params = list(policy_net.module.critic_shared.parameters()) + list(policy_net.module.critic_out.parameters())
     else:
-        optimizer_actor = optim.Adam(policy_net.actor_fc.parameters(), lr=args.lr_actor, weight_decay=args.weight_decay_actor)
-        optimizer_critic = optim.Adam(policy_net.critic_fc.parameters(), lr=args.lr_critic, weight_decay=args.weight_decay_critic)
+        actor_params = list(policy_net.actor_shared.parameters()) + list(policy_net.actor_out.parameters())
+        critic_params = list(policy_net.critic_shared.parameters()) + list(policy_net.critic_out.parameters())
 
-    # 학습률 스케줄러 초기화 (step_size와 gamma 값을 조정)
+    optimizer_actor = optim.Adam(actor_params, lr=args.lr_actor, weight_decay=args.weight_decay_actor)
+    optimizer_critic = optim.Adam(critic_params, lr=args.lr_critic, weight_decay=args.weight_decay_critic)
+
+    # 학습률 스케줄러 초기화
     scheduler_actor = optim.lr_scheduler.StepLR(optimizer_actor, step_size=args.lr_step_size, gamma=args.lr_gamma)
     scheduler_critic = optim.lr_scheduler.StepLR(optimizer_critic, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
@@ -1617,7 +1585,8 @@ def main():
 
     # --name 인자를 사용하여 하위 폴더 생성
     name_folder = args.name
-    base_dir = os.path.join(args.results_dir, num_missions_folder, current_time, name_folder)
+    base_dir = os.path.join(args.results_dir, num_missions_folder, current_time, name_folder, "update")
+
 
     # 학습 또는 테스트 모드 실행
     if args.test_mode:
@@ -1674,7 +1643,7 @@ def main():
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
             checkpoints_path=checkpoints_path,
-            patience=50,
+            patience=20,
             wandb_name=args.name,  # WandB 이름 전달
             use_2opt=args.use_2opt
         )
