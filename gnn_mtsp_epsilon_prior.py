@@ -286,7 +286,11 @@ def choose_action(action_probs, dist_matrix, epsilon, uav_order, global_action_m
                 distances = dist_matrix[i, available_actions]
                 
                 # 가까운 임무에 더 높은 확률 부여 (거리 반비례)
-                weighted_logits = logits_i - distances / (dist_matrix.max() + 1e-5)  # 거리 정규화
+                
+                mean_distance = distances.mean()
+                std_distance = distances.std() + 1e-5  # 0으로 나누는 것을 방지
+                z_scores = (distances - mean_distance) / std_distance
+                weighted_logits = logits_i - z_scores
                 probs_i = F.softmax(weighted_logits, dim=-1).detach().cpu().numpy()
                 
                 # NaN 확인 및 문제 해결

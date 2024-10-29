@@ -253,7 +253,6 @@ def clip_rewards(rewards, min_value=-1000, max_value=1000):
 
 
 
-
 def choose_action(action_logits, dist_matrix, temperature, uav_order, global_action_mask=None):
     """
     가변 UAV 및 미션 수에 대응하는 유연한 액션 선택 함수.
@@ -271,8 +270,12 @@ def choose_action(action_logits, dist_matrix, temperature, uav_order, global_act
             distances = dist_matrix[i, available_actions]
 
             # 거리 기반으로 로그 확률 조정
-            distance_weighted_logits = logits_i - distances / temperature
-            probs_i = F.softmax(distance_weighted_logits, dim=-1).detach().cpu().numpy()
+            mean_distance = distances.mean()
+            std_distance = distances.std() + 1e-5  # 0으로 나누는 것을 방지
+            z_scores = (distances - mean_distance) / std_distance
+            weighted_logits = logits_i - z_scores
+            probs_i = F.softmax(weighted_logits, dim=-1).detach().cpu().numpy()
+
 
             # NaN 또는 유효하지 않은 확률 처리
             if np.isnan(probs_i).any() or not np.isfinite(probs_i).all():
@@ -1643,7 +1646,7 @@ def main():
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
             checkpoints_path=checkpoints_path,
-            patience=20,
+            patience=50,
             wandb_name=args.name,  # WandB 이름 전달
             use_2opt=args.use_2opt
         )
