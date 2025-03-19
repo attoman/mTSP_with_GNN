@@ -1,2 +1,4 @@
 wandb/
 __pycache__/
+update/wandb/
+update/__pycache__/

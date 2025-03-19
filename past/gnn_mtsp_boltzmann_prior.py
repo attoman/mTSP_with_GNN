@@ -253,7 +253,6 @@ def clip_rewards(rewards, min_value=-1000, max_value=1000):
 
 
 
-
 def choose_action(action_logits, dist_matrix, temperature, uav_order, global_action_mask=None):
     """
     가변 UAV 및 미션 수에 대응하는 유연한 액션 선택 함수.
@@ -268,14 +267,15 @@ def choose_action(action_logits, dist_matrix, temperature, uav_order, global_act
                 continue  # 선택 가능한 액션이 없으면 스킵
 
             logits_i = action_logits[i, available_actions]
-            # distances = dist_matrix[i, available_actions]
-            logits_scaled = logits_i / temperature
-            probs_i = F.softmax(logits_scaled, dim=-1).detach().cpu().numpy()
-            
+            distances = dist_matrix[i, available_actions]
+
             # 거리 기반으로 로그 확률 조정
-            # normalized_distances = ( distances - distances.min() ) / (distances.max() - distances.min() )
-            # distance_weighted_logits = ( logits_i - normalized_distances ) / temperature
-            # probs_i = F.softmax(distance_weighted_logits, dim=-1).detach().cpu().numpy()
+            mean_distance = distances.mean()
+            std_distance = distances.std() + 1e-5  # 0으로 나누는 것을 방지
+            z_scores = (distances - mean_distance) / std_distance
+            weighted_logits = logits_i - z_scores
+            probs_i = F.softmax(weighted_logits, dim=-1).detach().cpu().numpy()
+
 
             # NaN 또는 유효하지 않은 확률 처리
             if np.isnan(probs_i).any() or not np.isfinite(probs_i).all():
@@ -991,7 +991,7 @@ def train_model(env, val_env, policy_net, optimizer_actor, optimizer_critic, sch
             scheduler_critic.step()
 
             # 검증
-            if epoch % 5 == 0:
+            if epoch % 1 == 0:
                 validation_reward = validate_model(val_env, policy_net, device, edge_index, batch, checkpoints_path, results_path, epoch, reward_type, alpha, beta, gamma, wandb_name, use_2opt=False)
                 
                 # 조기 종료 체크
@@ -1442,11 +1442,11 @@ def main():
     parser.add_argument('--gnn_hidden_dim', type=int, default=128, help="GNN 인코더의 숨겨진 차원")
     parser.add_argument('--actor_hidden_dim', type=int, default=128, help="액터 네트워크의 숨겨진 차원")
     parser.add_argument('--critic_hidden_dim', type=int, default=128, help="크리틱 네트워크의 숨겨진 차원")
-    parser.add_argument('--actor_layers', type=int, default=6, help="액터 네트워크의 레이어 수")
-    parser.add_argument('--critic_layers', type=int, default=6, help="크리틱 네트워크의 레이어 수")
+    parser.add_argument('--actor_layers', type=int, default=8, help="액터 네트워크의 레이어 수")
+    parser.add_argument('--critic_layers', type=int, default=8, help="크리틱 네트워크의 레이어 수")
     parser.add_argument('--num_layers', type=int, default=8, help="GNN 레이어 수")
     parser.add_argument('--heads', type=int, default=8, help="GNN Transformer 헤드 수")
-    parser.add_argument('--num_epochs', type=int, default=20000, help="에폭 수")
+    parser.add_argument('--num_epochs', type=int, default=200000, help="에폭 수")
     parser.add_argument('--batch_size', type=int, default=1024, help="배치 크기")
     # Remove epsilon related arguments
     # parser.add_argument('--epsilon_min', type=float, default=0.05, help="Epsilon 최소치")
@@ -1457,9 +1457,9 @@ def main():
     parser.add_argument('--weight_decay_critic', type=float, default=1e-5, help="크리틱 옵티마이저의 weight decay")
     parser.add_argument('--checkpoint_path', type=str, default=None, help="기존 체크포인트의 경로")
     parser.add_argument('--test_mode', action='store_true', help="테스트 모드 활성화")
-    parser.add_argument('--train_seed', type=int, default=20245, help="Train 데이터셋 시드")
-    parser.add_argument('--validation_seed', type=int, default=20255, help="Validation 데이터셋 시드")
-    parser.add_argument('--test_seed', type=int, default=2026, help="Test 데이터셋 시드")
+    parser.add_argument('--train_seed', type=int, default=39482, help="Train 데이터셋 시드")
+    parser.add_argument('--validation_seed', type=int, default=3526, help="Validation 데이터셋 시드")
+    parser.add_argument('--test_seed', type=int, default=53645, help="Test 데이터셋 시드")
     parser.add_argument('--time_weight', type=float, default=2.0, help="보상 시간의 가중치")
     parser.add_argument('--lr_step_size', type=int, default=10000, help="학습률 스케줄러의 step size")
     parser.add_argument('--lr_gamma', type=float, default=0.01, help="학습률 스케줄러의 gamma 값")
@@ -1472,15 +1472,15 @@ def main():
     
     # 보상 함수 선택 인자 추가
     parser.add_argument('--reward_type', type=str, default='mixed', choices=['max', 'total', 'mixed'], help="보상 함수 유형: 'max', 'total', 'mixed'")
-    parser.add_argument('--alpha', type=float, default=0.5, help="혼합 보상 시 최대 소요 시간 패널티 가중치 (reward_type='mixed'일 때 사용)")
+    parser.add_argument('--alpha', type=float, default=0.7, help="혼합 보상 시 최대 소요 시간 패널티 가중치 (reward_type='mixed'일 때 사용)")
     parser.add_argument('--beta', type=float, default=0.5, help="혼합 보상 시 전체 소요 시간 합 패널티 가중치 (reward_type='mixed'일 때 사용)")
-    parser.add_argument('--gamma', type=float, default=0.5, help="travel_time_variance  패널티 가중치 (reward_type='mixed'일 때 사용)")
+    parser.add_argument('--gamma', type=float, default=0.3, help="travel_time_variance  패널티 가중치 (reward_type='mixed'일 때 사용)")
     
     # 2-opt 사용 여부 추가
     parser.add_argument('--use_2opt', action='store_true', help="2-opt 알고리즘을 학습에 포함 여부 확인")
     
     # 결과 디렉토리 추가
-    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/boltzmann_prior/", help="결과 저장 디렉토리")
+    parser.add_argument('--results_dir', type=str, default="/mnt/hdd2/attoman/GNN/results/boltzmann_prior/update/", help="결과 저장 디렉토리")
     
     # WandB 이름 인자 추가
     parser.add_argument('--name', type=str, default='boltzmann_prior', help="WandB run name")
@@ -1489,6 +1489,7 @@ def main():
     parser.add_argument('--temperature', type=float, default=1.8, help="Boltzmann 탐험의 온도 매개변수")
     parser.add_argument('--temperature_decay', type=float, default=0.999999, help="Boltzmann 온도 감소율")
     parser.add_argument('--temperature_min', type=float, default=0.2, help="Boltzmann 온도의 최소값")
+    
     
     args = parser.parse_args()
     
@@ -1646,7 +1647,7 @@ def main():
             checkpoint_path=args.checkpoint_path,
             results_path=images_path,
             checkpoints_path=checkpoints_path,
-            patience=50,
+            patience=5000,
             wandb_name=args.name,  # WandB 이름 전달
             use_2opt=args.use_2opt
         )
