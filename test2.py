@@ -2335,15 +2335,15 @@ def train_model(
         
         # 환경 설정 로깅
         env_config = {
-            "environment": {
-                "num_uavs": env.num_uavs,
-                "num_missions": env.num_missions,
-                "max_missions": env.max_missions,
-                "risk_areas": env.risk_centers.shape[0],
-                "no_entry_zones": env.zone_centers.shape[0]
-            }
+        "environment": {
+            "num_uavs": train_env.num_uavs,
+            "num_missions": train_env.num_missions,
+            "max_missions": train_env.max_missions,
+            "risk_areas": train_env.risk_centers.shape[0],
+            "no_entry_zones": train_env.zone_centers.shape[0]
         }
-        wandb.config.update(env_config)
+    }
+    wandb.config.update(env_config, allow_val_change=True)
     
     # 그래디언트 클리퍼 초기화
     grad_clipper = AdaptiveClipper(initial_max_norm=config.gradient_clip)

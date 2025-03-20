@@ -1,0 +1,4 @@
+nohup: ignoring input
+  File "/mnt/hdd2/attoman/workspace/git/mTSP_with_GNN/test3.py", line 2291
+    def interactive_evaluation(
+SyntaxError: expected 'except' or 'finally' block
